@@ -82,7 +82,7 @@ func upload(w http.ResponseWriter, req *http.Request) {
 		if len(name) == 0 {
 			continue // don't replace with empty file
 		}
-		t, err := os.CreateTemp("", name+`.*`)
+		t, err := os.CreateTemp(".", name+`.*`)
 		if err != nil {
 			log.Fatal(err)
 		}
