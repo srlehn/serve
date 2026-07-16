@@ -1,38 +1,18 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <style>
-    /* Split the screen in half */
-    .split {
-        height: 100%;
-        width: 50%;
-        position: fixed;
-        z-index: 1;
-        top: 0;
-        overflow-x: hidden;
-        padding-top: 20px;
-    }
-
-    /* Control the left side */
-    .left {
-        left: 0;
-        background-color: rgb(128, 128, 128);
-    }
-
-    /* Control the right side */
-    .right {
-        right: 0;
-    }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <link rel="stylesheet" href="/style.css">
 </head>
 <body>
     <div class="split left">
         <b>Files:</b><br>
-        {{range .}}<a href="{{name .}}">{{name .}}</a><br>
+        {{range .Files}}{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}{{if .QRHref}} <a href="{{.QRHref}}" title="transfer via QR codes"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M0 0h7v7H0zm1 1v5h5V1zm1 1h3v3H2zM9 0h7v7H9zm1 1v5h5V1zm1 1h3v3h-3zM0 9h7v7H0zm1 1v5h5v-5zm1 1h3v3H2zM9 9h2v2H9zm4 0h3v3h-3zm-4 4h3v3H9zm5 1h2v2h-2z"/></svg></a>{{end}}{{if .Note}} <small>({{.Note}})</small>{{end}}<br>
         {{end}}
     </div>
     <div class="split right">
-        <form method="post" action="/upload" target="dummyFrame" enctype="multipart/form-data">
+        <form method="post" action="{{.UploadURL}}" target="dummyFrame" enctype="multipart/form-data">
             <div>
                 <label for="file">Choose file to upload</label>
                 <input type="file" id="file" name="file" multiple>
@@ -42,6 +22,199 @@
             </div>
         </form>
         <iframe name="dummyFrame" id="dummyFrame" style="display: none;"></iframe>
+        {{if .ShowQR}}<img src="{{.QRURL}}" alt="this page as QR code" title="scan to open this page on another device"
+            style="position: fixed; bottom: 8px; right: 8px; width: 128px; height: 128px;">{{end}}
     </div>
+    <button title="receive a file by scanning its QR codes with this device's camera"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M1 1h4v2H3v2H1zM11 1h4v4h-2V3h-2zM1 11h2v2h2v2H1zM11 15v-2h2v-2h2v4z"/><circle cx="8" cy="8" r="2.5" fill="currentColor"/></svg></button>
+    <dialog>
+        <img alt="QR codes">
+        <p></p>
+    </dialog>
+    <dialog>
+        <button class="close" title="close" aria-label="close">&times;</button>
+        <video playsinline webkit-playsinline muted></video>
+        <p class="progress"></p>
+        <p class="received"></p>
+    </dialog>
+    <script>
+    const dialog = document.querySelector('dialog:has(img)');
+    const stream = dialog.querySelector('img');
+    const caption = dialog.querySelector('p');
+    for (const link of document.querySelectorAll('a[href^="/qr/"]')) {
+        link.addEventListener('click', e => {
+            e.preventDefault();
+            stream.src = link.getAttribute('href');
+            caption.textContent = decodeURIComponent(link.pathname.split('/').pop());
+            dialog.showModal();
+        });
+    }
+    /* click on the backdrop (the dialog element itself) closes; Esc is built in */
+    dialog.addEventListener('click', e => { if (e.target === dialog) dialog.close(); });
+    /* swap in a blank image on close so the browser aborts the stream */
+    dialog.addEventListener('close', () => {
+        stream.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+    });
+
+    /* camera scanning: frames are decoded in the browser by the
+       qrstream decoder compiled to wasm (same pipeline as the
+       server, exact bytes) running in a worker; the file is saved on
+       this device. Scanning continues after a file completes so the
+       next QR-code stream is picked up without reopening. */
+    const camDialog = document.querySelector('dialog:has(video)');
+    const video = camDialog.querySelector('video');
+    const camProgress = camDialog.querySelector('.progress');
+    const camReceived = camDialog.querySelector('.received');
+    video.disablePictureInPicture = true; /* no popout into native PiP */
+    let scanTimer, camStream, scanWorker, scanBusy, scanning;
+    function loadDecoder() {
+        if (!scanWorker) {
+            scanWorker = new Worker('/qrworker.js');
+            scanWorker.addEventListener('message', e => {
+                scanBusy = false;
+                scanResult(e.data);
+            });
+            scanWorker.addEventListener('error', () => {
+                scanBusy = false;
+                scanning = false;
+                camProgress.textContent = 'decoder stopped; close and retry';
+                scanWorker.terminate();
+                scanWorker = null;
+            });
+        }
+    }
+    function scanResult(result) {
+        if (!result) return;
+        if (result.error) {
+            camProgress.textContent = result.error + '; close and retry';
+            scanning = false;
+            if (scanWorker) scanWorker.terminate();
+            scanWorker = null;
+            return;
+        }
+        /* the just-completed stream is still in view - ignore it (the
+           receiver compares only against the last stream id) */
+        if (result.sameAsLast) return;
+        if (result.done) {
+            camProgress.textContent = 'received ' + result.name + ' - tap to save';
+            setReceived(result.name, result.data);
+        } else {
+            camProgress.textContent = result.have + ' / ' + result.total + ' frames';
+        }
+    }
+
+    /* The last received file is kept in memory and re-shown whenever
+       the camera overlay is opened, until ten minutes pass. The save
+       sheet fires automatically on completion; iOS only allows
+       navigator.share inside a fresh user gesture, so if a long
+       multi-part scan has outlasted that activation the save link (or
+       a tap anywhere on the overlay) re-fires it. */
+    const RECEIVED_TTL = 10 * 60 * 1000;
+    let received, receivedTimer;
+    function setReceived(name, data) {
+        received = { name, data, time: Date.now() };
+        clearTimeout(receivedTimer);
+        receivedTimer = setTimeout(clearReceived, RECEIVED_TTL);
+        renderReceived();
+        saveReceived(); /* open the save sheet right away */
+    }
+    function clearReceived() {
+        received = null;
+        renderReceived();
+    }
+    function saveReceived() {
+        if (!received) return;
+        const file = new File([received.data], received.name, { type: 'application/octet-stream' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            navigator.share({ files: [file] })
+                .catch(() => {});
+        } else {
+            const dl = document.createElement('a');
+            dl.href = URL.createObjectURL(file);
+            dl.download = received.name;
+            dl.click();
+        }
+    }
+    function renderReceived() {
+        if (received && Date.now() - received.time > RECEIVED_TTL) received = null;
+        camReceived.textContent = '';
+        if (!received) return;
+        const a = document.createElement('a');
+        a.href = '#';
+        a.textContent = 'save ' + received.name;
+        a.addEventListener('click', e => { e.preventDefault(); saveReceived(); });
+        camReceived.append('last received - ', a);
+    }
+    async function openCamera() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            /* camera access needs a secure context */
+            if (location.protocol !== 'https:') {
+                location.href = 'https://' + location.hostname + ':8443' + location.pathname;
+                return;
+            }
+            alert('no camera available');
+            return;
+        }
+        loadDecoder();
+        try {
+            camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        } catch (err) {
+            alert('camera: ' + err.message);
+            return;
+        }
+        scanBusy = false;
+        camProgress.textContent = 'point the camera at the QR codes';
+        renderReceived(); /* re-show a still-valid earlier receival */
+        if (!camDialog.open) camDialog.showModal();
+        video.srcObject = camStream;
+        try {
+            await video.play();
+        } catch (err) {
+            camProgress.textContent = 'camera preview failed: ' + err.message;
+        }
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        scanning = true;
+        clearInterval(scanTimer);
+        scanTimer = setInterval(() => {
+            /* one frame in flight at a time: the worker's decode
+               speed sets the pace, the preview never freezes */
+            if (!scanning || scanBusy || !video.videoWidth) return;
+            /* downscale: full camera resolution costs decode time
+               without helping screen-displayed codes */
+            const scale = Math.min(1, 1024 / video.videoWidth);
+            canvas.width = Math.round(video.videoWidth * scale);
+            canvas.height = Math.round(video.videoHeight * scale);
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            if (!scanWorker) return;
+            scanBusy = true;
+            try {
+                scanWorker.postMessage(
+                    { width: img.width, height: img.height, buffer: img.data.buffer },
+                    [img.data.buffer]);
+            } catch {
+                scanBusy = false;
+                scanning = false;
+                camProgress.textContent = 'decoder stopped; close and retry';
+            }
+        }, 100);
+    }
+    document.querySelector('body > button').addEventListener('click', openCamera);
+    /* explicit close only - no backdrop-tap close, which stray
+       touches kept triggering while holding the phone to scan */
+    camDialog.querySelector('.close').addEventListener('click', () => camDialog.close());
+    /* a tap on the preview re-fires the save sheet for the pending
+       file: on iOS the auto-attempt at completion may have lacked a
+       fresh gesture, and this tap supplies one */
+    video.addEventListener('click', saveReceived);
+    camDialog.addEventListener('close', () => {
+        scanning = false;
+        clearInterval(scanTimer);
+        video.pause();
+        if (camStream) for (const t of camStream.getTracks()) t.stop();
+        camStream = null;
+        video.srcObject = null;
+    });
+    </script>
 </body>
 </html>

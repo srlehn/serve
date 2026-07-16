@@ -1,108 +1,721 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	_ "embed"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"html/template"
 	"io"
-	"io/ioutil"
+	"io/fs"
 	"log"
-	"mime"
+	"math/big"
 	"mime/multipart"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
+	"sync"
+	"time"
+
+	qrcode "github.com/skip2/go-qrcode"
+	"github.com/srlehn/serve/qrstream"
+)
+
+const (
+	httpPort      = `:8000`
+	httpsPort     = `:8443`
+	maxQRFileSize = 64 << 20
 )
 
 //go:embed index.html.template
 var pageTemplate string
 
+//go:embed style.css
+var styleCSS []byte
+
+// the camera scanner: the qrstream decoder compiled to wasm plus
+// the matching JS loader. Rebuild with go generate.
+//
+//go:generate go run wasm/generate.go
+var (
+	//go:embed wasm/qrstream.wasm
+	qrWASM []byte
+	//go:embed wasm/wasm_exec.js
+	wasmExec []byte
+	//go:embed wasm/worker.js
+	qrWorker []byte
+)
+
+type server struct {
+	root     *os.Root
+	template *template.Template
+	logger   *log.Logger
+}
+
+func newServer(root *os.Root, logger *log.Logger) (*server, error) {
+	tp, err := template.New(`index`).Parse(pageTemplate)
+	if err != nil {
+		return nil, err
+	}
+	return &server{root: root, template: tp, logger: logger}, nil
+}
+
+func (s *server) mux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.page)
+	mux.HandleFunc("/upload", s.upload)
+	mux.HandleFunc("/qr/", s.qr)
+	mux.HandleFunc("/qrurl", s.qrurl)
+	// instantiateStreaming requires the exact wasm content type.
+	mux.HandleFunc("/qrstream.wasm", serveStatic(`application/wasm`, qrWASM))
+	mux.HandleFunc("/wasm_exec.js", serveStatic(`text/javascript`, wasmExec))
+	mux.HandleFunc("/qrworker.js", serveStatic(`text/javascript`, qrWorker))
+	mux.HandleFunc("/style.css", serveStatic(`text/css`, styleCSS))
+	return mux
+}
+
 func main() {
-	http.HandleFunc("/", page)
-	http.HandleFunc("/upload", upload)
-
-	if err := http.ListenAndServe(`:8000`, nil); err != nil {
-		log.Fatal(err)
-	}
-}
-
-func page(w http.ResponseWriter, req *http.Request) {
-	if req.Method == `GET` && req.URL.Path != `/` {
-		download(w, req)
-		return
-	}
-	fis, err := ioutil.ReadDir(`.`)
+	root, err := os.OpenRoot(`.`)
 	if err != nil {
 		log.Fatal(err)
 	}
-	funcMap := template.FuncMap{`name`: func(n interface{ Name() string }) string { return n.Name() }}
-	tp, err := template.New(`index`).Funcs(funcMap).Parse(pageTemplate)
+	defer root.Close()
+	srv, err := newServer(root, log.Default())
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := tp.Execute(w, fis); err != nil {
+	mux := srv.mux()
+
+	ln, err := net.Listen(`tcp`, httpPort)
+	if err != nil {
+		log.Fatal(err)
+	}
+	cert, err := serverCert()
+	if err != nil {
+		log.Fatal(err)
+	}
+	lnTLS, err := tls.Listen(`tcp`, httpsPort, &tls.Config{Certificates: []tls.Certificate{cert}})
+	if err != nil {
+		log.Fatal(err)
+	}
+	go printURL()
+	go func() { log.Fatal(http.Serve(lnTLS, mux)) }()
+	if err := http.Serve(ln, mux); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func download(w http.ResponseWriter, req *http.Request) {
-	http.ServeFile(w, req, `.`+req.URL.Path)
+// candidateHosts lists hosts another device might reach, in
+// preference order: the default-route IPv4 first, remaining IPv4s,
+// then IPv6 (bracketed; link-local excluded - its zone does not
+// transfer to another device), localhost last.
+func candidateHosts() []string {
+	var v4, v6 []string
+	add := func(ip net.IP) {
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast() {
+			return
+		}
+		if ip.To4() != nil {
+			if s := ip.String(); !slices.Contains(v4, s) {
+				v4 = append(v4, s)
+			}
+		} else if s := `[` + ip.String() + `]`; !slices.Contains(v6, s) {
+			v6 = append(v6, s)
+		}
+	}
+	// A UDP connect to TEST-NET-1 asks the kernel which local address
+	// its default route would use. No packet is sent because the socket
+	// is never written to, and 192.0.2.0/24 is reserved for examples.
+	if c, err := net.Dial(`udp`, `192.0.2.1:9`); err == nil {
+		add(c.LocalAddr().(*net.UDPAddr).IP)
+		c.Close()
+	}
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range addrs {
+			if n, ok := a.(*net.IPNet); ok {
+				add(n.IP)
+			}
+		}
+	}
+	return append(append(v4, v6...), `localhost`)
 }
 
-func upload(w http.ResponseWriter, req *http.Request) {
-	if req.Method != `POST` {
+// alt holds the probe-passed non-loopback hosts, in preference
+// order; the loopback QR fallback uses the first one.
+var alt struct {
+	sync.Mutex
+	hosts []string
+}
+
+func altHost() string {
+	alt.Lock()
+	defer alt.Unlock()
+	if len(alt.hosts) == 0 {
+		return ``
+	}
+	return alt.hosts[0]
+}
+
+// printURL prints the web UI addresses that answer an HTTP probe,
+// each non-localhost one with QR codes for both schemes: http scans
+// without the self-signed-certificate warning, https is required
+// before the browser allows camera access. The probe hits our own
+// listener, so it only weeds out locally dead addresses (e.g. a
+// downed bridge); which of the remaining addresses another device
+// can actually reach is unknowable from here, hence QRs per
+// candidate. Survivors are remembered for the loopback QR fallback.
+func printURL() {
+	hosts := candidateHosts()
+	reachable := make([]bool, len(hosts))
+	client := &http.Client{Timeout: time.Second}
+	var wg sync.WaitGroup
+	for i, h := range hosts {
+		wg.Go(func() {
+			if resp, err := client.Head(`http://` + h + httpPort + `/`); err == nil {
+				resp.Body.Close()
+				reachable[i] = true
+			}
+		})
+	}
+	wg.Wait()
+	for i, h := range hosts {
+		if !reachable[i] {
+			continue
+		}
+		if h != `localhost` {
+			alt.Lock()
+			alt.hosts = append(alt.hosts, h)
+			alt.Unlock()
+		}
+		for _, u := range []string{`http://` + h + httpPort + `/`, `https://` + h + httpsPort + `/`} {
+			if h != `localhost` {
+				if q, err := qrText(u); err == nil {
+					fmt.Print(q)
+				}
+			}
+			fmt.Println(u)
+		}
+	}
+}
+
+// serverCert generates a fresh in-memory self-signed certificate on
+// every start and stores nothing: serve runs on borrowed machines
+// (a family member's PC, a detached company box), so it must not
+// leave key material behind. The per-restart browser warning is the
+// accepted cost; one server run typically spans many browser
+// sessions.
+func serverCert() (tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	tmpl := x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: `serve`},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().AddDate(10, 0, 0),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{`localhost`},
+	}
+	if hn, err := os.Hostname(); err == nil && hn != `` {
+		tmpl.DNSNames = append(tmpl.DNSNames, hn)
+	}
+	for _, h := range candidateHosts() {
+		if ip := net.ParseIP(strings.Trim(h, `[]`)); ip != nil {
+			tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
+		}
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
+}
+
+// qrText renders content as a single QR code drawn with terminal
+// block characters, e.g. to show a URL for scanning off the terminal.
+func qrText(content string) (string, error) {
+	q, err := qrcode.New(content, qrcode.Medium)
+	if err != nil {
+		return ``, err
+	}
+	return q.ToSmallString(false), nil
+}
+
+// qrPNG renders content as a single QR code PNG of size×size pixels.
+func qrPNG(content string, size int) ([]byte, error) {
+	q, err := qrcode.New(content, qrcode.Medium)
+	if err != nil {
+		return nil, err
+	}
+	return q.PNG(size)
+}
+
+// serveStatic serves an embedded asset, gzip-compressed for clients
+// that accept it; compression runs once, on first use.
+func serveStatic(contentType string, data []byte) http.HandlerFunc {
+	var once sync.Once
+	var gz []byte
+	return func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet && req.Method != http.MethodHead {
+			methodNotAllowed(w, http.MethodGet, http.MethodHead)
+			return
+		}
+		w.Header().Set(`Content-Type`, contentType)
+		w.Header().Set(`Vary`, `Accept-Encoding`)
+		if strings.Contains(req.Header.Get(`Accept-Encoding`), `gzip`) {
+			once.Do(func() {
+				var buf bytes.Buffer
+				zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+				zw.Write(data)
+				zw.Close()
+				gz = buf.Bytes()
+			})
+			w.Header().Set(`Content-Encoding`, `gzip`)
+			if req.Method == http.MethodHead {
+				return
+			}
+			w.Write(gz)
+			return
+		}
+		if req.Method == http.MethodHead {
+			return
+		}
+		w.Write(data)
+	}
+}
+
+func methodNotAllowed(w http.ResponseWriter, methods ...string) {
+	w.Header().Set(`Allow`, strings.Join(methods, `, `))
+	http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+}
+
+// loopbackHost reports whether the request host is localhost or a
+// loopback IP. Such a URL must never end up in a QR code: the scan
+// happens on another device, where a loopback URL directs the
+// scanning device to itself instead of to this host.
+func loopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	if host == `localhost` {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, `[]`))
+	return ip != nil && ip.IsLoopback()
+}
+
+// qrurl serves a QR code of the URL this request arrived on - the one
+// address the connecting browser has proven reachable. For loopback
+// requests (where that URL would point the scanning device at
+// itself) it falls back to the best probed non-loopback host.
+func (s *server) qrurl(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet && req.Method != http.MethodHead {
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
-	if err := req.ParseForm(); err != nil {
-		log.Fatal(err)
+	scheme, port := `http`, httpPort
+	if req.TLS != nil {
+		scheme, port = `https`, httpsPort
 	}
-	mediaType, params, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
-	if err != nil || !strings.HasPrefix(mediaType, "multipart/") {
+	host := req.Host
+	if loopbackHost(host) {
+		if host = altHost(); host == `` {
+			http.NotFound(w, req)
+			return
+		}
+		host += port
+	}
+	targetPath := req.URL.Query().Get(`path`)
+	if !strings.HasPrefix(targetPath, `/`) {
+		targetPath = `/`
+	}
+	target := (&url.URL{Scheme: scheme, Host: host, Path: targetPath}).String()
+	png, err := qrPNG(target, 256)
+	if err != nil {
+		s.requestError(w, req, http.StatusInternalServerError, `could not render URL QR code`, err)
 		return
 	}
-	boundary, ok := params["boundary"]
-	if !ok {
+	w.Header().Set(`Content-Type`, `image/png`)
+	if req.Method == http.MethodHead {
 		return
 	}
-	mr := multipart.NewReader(req.Body, boundary)
+	w.Write(png)
+}
+
+var errSymlinkDirectory = errors.New(`symlink directories are not served`)
+
+// localName converts an io/fs-style slash-separated name into a local
+// path while rejecting absolute paths and dot traversal. The root is
+// represented by ".".
+func localName(name string) (string, error) {
+	if name == `` || name == `.` {
+		return `.`, nil
+	}
+	if !fs.ValidPath(name) {
+		return ``, fs.ErrInvalid
+	}
+	return filepath.Localize(name)
+}
+
+func requestLocalName(urlPath string) (string, error) {
+	name := strings.TrimPrefix(urlPath, `/`)
+	if name == urlPath {
+		return ``, fs.ErrInvalid
+	}
+	name = strings.TrimSuffix(name, `/`)
+	return localName(name)
+}
+
+// rejectSymlinkDirectories checks every path component before opening
+// it. Final symlinks to regular files are allowed, but a directory
+// symlink is never used for listing, downloading, QR transfer, or
+// upload placement. os.Root independently prevents links escaping the
+// served tree.
+func rejectSymlinkDirectories(root *os.Root, name string) error {
+	if name == `.` {
+		return nil
+	}
+	current := `.`
+	for component := range strings.SplitSeq(filepath.ToSlash(name), `/`) {
+		current = filepath.Join(current, component)
+		info, err := root.Lstat(current)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		target, err := root.Stat(current)
+		if err != nil {
+			return err
+		}
+		if target.IsDir() {
+			return fmt.Errorf("%w: %s", errSymlinkDirectory, filepath.ToSlash(current))
+		}
+	}
+	return nil
+}
+
+func (s *server) openPath(name string) (*os.File, os.FileInfo, error) {
+	if err := rejectSymlinkDirectories(s.root, name); err != nil {
+		return nil, nil, err
+	}
+	f, err := s.root.Open(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	return f, info, nil
+}
+
+func (s *server) requestError(w http.ResponseWriter, req *http.Request, status int, message string, err error) {
+	if err != nil {
+		s.logger.Printf("request method=%q path=%q status=%d error=%q", req.Method, req.URL.Path, status, err.Error())
+	}
+	http.Error(w, message, status)
+}
+
+// qr serves the file named after /qr/ as an endless loop of QR codes
+// (qrstream format, a multipart motion stream so frames render
+// lazily) for camera transfer without any network.
+func (s *server) qr(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	name, err := localName(strings.TrimPrefix(req.URL.Path, `/qr/`))
+	if err != nil || name == `.` {
+		http.NotFound(w, req)
+		return
+	}
+	f, info, err := s.openPath(name)
+	if err != nil {
+		http.NotFound(w, req)
+		return
+	}
+	defer f.Close()
+	if !info.Mode().IsRegular() {
+		http.NotFound(w, req)
+		return
+	}
+	if info.Size() > maxQRFileSize {
+		s.requestError(w, req, http.StatusRequestEntityTooLarge, `file is too large for QR transfer`, nil)
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxQRFileSize+1))
+	if err != nil {
+		s.requestError(w, req, http.StatusInternalServerError, `could not read file`, err)
+		return
+	}
+	if len(data) > maxQRFileSize {
+		s.requestError(w, req, http.StatusRequestEntityTooLarge, `file is too large for QR transfer`, nil)
+		return
+	}
+	// Fountain mode for camera reception: every coded frame reduces
+	// the deficit, so there is no single "last frame" the scanner
+	// must wait a full loop to catch (sequential mode's
+	// coupon-collector tail).
+	st, err := qrstream.Encode(filepath.Base(name), data, &qrstream.Options{Fountain: true})
+	if err != nil {
+		s.requestError(w, req, http.StatusInternalServerError, `could not encode QR stream`, err)
+		return
+	}
+	st.ServeHTTP(w, req)
+}
+
+type pageEntry struct {
+	Name   string
+	Href   string
+	QRHref string
+	Note   string
+}
+
+type pageData struct {
+	Files     []pageEntry
+	UploadURL string
+	QRURL     string
+	ShowQR    bool
+}
+
+func (s *server) page(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet && req.Method != http.MethodHead {
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
+		return
+	}
+	name, err := requestLocalName(req.URL.Path)
+	if err != nil {
+		http.NotFound(w, req)
+		return
+	}
+	f, info, err := s.openPath(name)
+	if err != nil {
+		http.NotFound(w, req)
+		return
+	}
+	defer f.Close()
+	if !info.IsDir() {
+		s.download(w, req, f, info)
+		return
+	}
+	if name != `.` && !strings.HasSuffix(req.URL.Path, `/`) {
+		target := req.URL.Path + `/`
+		if req.URL.RawQuery != `` {
+			target += `?` + req.URL.RawQuery
+		}
+		http.Redirect(w, req, target, http.StatusMovedPermanently)
+		return
+	}
+	files, err := f.Readdir(-1)
+	if err != nil {
+		s.requestError(w, req, http.StatusInternalServerError, `could not read directory`, err)
+		return
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
+	entries := make([]pageEntry, 0, len(files))
+	for _, file := range files {
+		entry := pageEntry{Name: file.Name()}
+		entryName := filepath.Join(name, file.Name())
+		switch {
+		case file.IsDir():
+			entry.Href = url.PathEscape(file.Name()) + `/`
+		case file.Mode()&os.ModeSymlink != 0:
+			target, err := s.root.Stat(entryName)
+			switch {
+			case err != nil:
+				entry.Note = `unavailable symlink`
+			case target.IsDir():
+				entry.Note = `symlink directory not served`
+			case target.Mode().IsRegular():
+				entry.Href = url.PathEscape(file.Name())
+				entry.QRHref = (&url.URL{Path: `/qr/` + filepath.ToSlash(entryName)}).EscapedPath()
+			default:
+				entry.Note = `special file not served`
+			}
+		case file.Mode().IsRegular():
+			entry.Href = url.PathEscape(file.Name())
+			entry.QRHref = (&url.URL{Path: `/qr/` + filepath.ToSlash(entryName)}).EscapedPath()
+		default:
+			entry.Note = `special file not served`
+		}
+		entries = append(entries, entry)
+	}
+	uploadURL := `/upload`
+	if name != `.` {
+		uploadURL += `?` + url.Values{`dir`: {filepath.ToSlash(name)}}.Encode()
+	}
+	qrURL := `/qrurl?` + url.Values{`path`: {req.URL.Path}}.Encode()
+	data := pageData{
+		Files:     entries,
+		UploadURL: uploadURL,
+		QRURL:     qrURL,
+		ShowQR:    !loopbackHost(req.Host) || altHost() != ``,
+	}
+	var body bytes.Buffer
+	if err := s.template.Execute(&body, data); err != nil {
+		s.requestError(w, req, http.StatusInternalServerError, `could not render directory`, err)
+		return
+	}
+	w.Header().Set(`Content-Type`, `text/html; charset=utf-8`)
+	if req.Method != http.MethodHead {
+		body.WriteTo(w)
+	}
+}
+
+func (s *server) download(w http.ResponseWriter, req *http.Request, f *os.File, info os.FileInfo) {
+	if !info.Mode().IsRegular() {
+		http.NotFound(w, req)
+		return
+	}
+	http.ServeContent(w, req, info.Name(), info.ModTime(), f)
+}
+
+func sameOrigin(req *http.Request) bool {
+	origin := req.Header.Get(`Origin`)
+	if origin == `` {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == `` {
+		return false
+	}
+	scheme := `http`
+	if req.TLS != nil {
+		scheme = `https`
+	}
+	return u.Scheme == scheme && u.Host == req.Host
+}
+
+func (s *server) upload(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if !sameOrigin(req) {
+		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+		return
+	}
+	dir, err := localName(req.URL.Query().Get(`dir`))
+	if err != nil {
+		s.requestError(w, req, http.StatusBadRequest, `invalid upload directory`, err)
+		return
+	}
+	d, info, err := s.openPath(dir)
+	if err != nil {
+		http.NotFound(w, req)
+		return
+	}
+	d.Close()
+	if !info.IsDir() {
+		s.requestError(w, req, http.StatusBadRequest, `upload destination is not a directory`, nil)
+		return
+	}
+	mr, err := req.MultipartReader()
+	if err != nil {
+		s.requestError(w, req, http.StatusBadRequest, `expected a multipart upload`, err)
+		return
+	}
 	for {
 		p, err := mr.NextPart()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			log.Fatal(err)
+			s.requestError(w, req, http.StatusBadRequest, `could not read multipart upload`, err)
+			return
 		}
 		name := p.FileName()
-		formName := p.FormName()
-		if formName == `submitFiles` {
+		if name == `` {
+			p.Close()
 			continue
 		}
-
-		// empty field
-		if len(name) == 0 {
-			continue // don't replace with empty file
-		}
-		t, err := os.CreateTemp(".", name+`.*`)
+		err = storeUpload(s.root, dir, name, p)
+		p.Close()
 		if err != nil {
-			log.Fatal(err)
-		}
-		tempName := t.Name()
-		defer func() {
-			t.Close()
-			os.Remove(tempName)
-		}()
-		_, err = io.Copy(t, p)
-		if err != nil {
-			log.Fatal(err)
-		}
-		t.Close()
-		err = os.Rename(tempName, name)
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = os.Chmod(name, 0644)
-		if err != nil {
-			log.Fatal(err)
+			status := http.StatusInternalServerError
+			message := `could not store upload`
+			if errors.Is(err, fs.ErrInvalid) {
+				status = http.StatusBadRequest
+				message = `invalid upload filename`
+			}
+			s.requestError(w, req, status, message, err)
+			return
 		}
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func storeUpload(root *os.Root, dir, name string, src *multipart.Part) error {
+	if name == `.` || !filepath.IsLocal(name) {
+		return fs.ErrInvalid
+	}
+	target := filepath.Join(dir, name)
+	temp, tempName, err := createUploadTemp(root, dir)
+	if err != nil {
+		return err
+	}
+	keep := false
+	defer func() {
+		temp.Close()
+		if !keep {
+			root.Remove(tempName)
+		}
+	}()
+	if _, err := io.Copy(temp, src); err != nil {
+		return err
+	}
+	if err := temp.Chmod(0o644); err != nil {
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	// Replacement is intentional. The temporary file keeps an aborted
+	// upload from leaving a partially written destination.
+	if err := root.Rename(tempName, target); err != nil {
+		return err
+	}
+	keep = true
+	return nil
+}
+
+func createUploadTemp(root *os.Root, dir string) (*os.File, string, error) {
+	for range 100 {
+		var random [8]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return nil, ``, err
+		}
+		name := filepath.Join(dir, `.serve-upload-`+hex.EncodeToString(random[:]))
+		f, err := root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			return f, name, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, ``, err
+		}
+	}
+	return nil, ``, errors.New(`could not allocate upload temporary file`)
 }

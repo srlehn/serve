@@ -1,4 +1,9 @@
 /webserve
+/serve
 *.code-workspace
 *.md
-
+!/README.md
+/_annex/
+/vendor/
+/wasm/qrstream.wasm
+/wasm/wasm_exec.js
