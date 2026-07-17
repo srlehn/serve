@@ -25,7 +25,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -34,6 +33,7 @@ import (
 
 	qrcode "github.com/skip2/go-qrcode"
 	"github.com/srlehn/serve/filebrowser"
+	"github.com/srlehn/serve/internal/payload"
 	"github.com/srlehn/serve/qrstream"
 )
 
@@ -555,34 +555,29 @@ func (s *server) qr(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(w, req)
 		return
 	}
-	f, info, err := filebrowser.Open(s.files, name)
+	source, err := payload.OpenFile(s.files, name)
 	if err != nil {
 		http.NotFound(w, req)
 		return
 	}
-	defer f.Close()
-	if !info.Mode().IsRegular() {
-		http.NotFound(w, req)
-		return
-	}
-	if info.Size() > maxQRFileSize {
+	if size, ok := source.Size(); ok && size > maxQRFileSize {
 		s.requestError(w, req, http.StatusRequestEntityTooLarge, `file is too large for QR transfer`, nil)
 		return
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxQRFileSize+1))
+	data, _, err := payload.ReadAll(req.Context(), source, maxQRFileSize)
 	if err != nil {
+		if errors.Is(err, payload.ErrTooLarge) {
+			s.requestError(w, req, http.StatusRequestEntityTooLarge, `file is too large for QR transfer`, nil)
+			return
+		}
 		s.requestError(w, req, http.StatusInternalServerError, `could not read file`, err)
-		return
-	}
-	if len(data) > maxQRFileSize {
-		s.requestError(w, req, http.StatusRequestEntityTooLarge, `file is too large for QR transfer`, nil)
 		return
 	}
 	// Fountain mode for camera reception: every coded frame reduces
 	// the deficit, so there is no single "last frame" the scanner
 	// must wait a full loop to catch (sequential mode's
 	// coupon-collector tail).
-	st, err := qrstream.Encode(path.Base(name), data, &qrstream.Options{Fountain: true})
+	st, err := qrstream.Encode(source.Filename(), data, &qrstream.Options{Fountain: true})
 	if err != nil {
 		s.requestError(w, req, http.StatusInternalServerError, `could not encode QR stream`, err)
 		return
