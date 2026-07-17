@@ -37,6 +37,33 @@
         <p class="received"></p>
     </dialog>
     <script>
+    {{if .BrowserLogging}}
+    function qlog(message) {
+        const text = String(message);
+        console.debug('[serve]', text);
+        try {
+            fetch('/log', {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+                body: text,
+                keepalive: true,
+            }).catch(() => {});
+        } catch {}
+    }
+    window.addEventListener('error', e => {
+        qlog('window error ' + e.message);
+    });
+    window.addEventListener('unhandledrejection', e => {
+        const reason = e.reason instanceof Error
+            ? e.reason.name + ': ' + e.reason.message
+            : String(e.reason);
+        qlog('unhandled rejection ' + reason);
+    });
+    qlog('page ready secure=' + window.isSecureContext + ' protocol=' + location.protocol);
+    {{else}}
+    function qlog() {}
+    {{end}}
+
     const dialog = document.querySelector('dialog:has(img)');
     const stream = dialog.querySelector('img');
     const caption = dialog.querySelector('p');
@@ -68,12 +95,14 @@
     let scanTimer, camStream, scanWorker, scanBusy, scanning;
     function loadDecoder() {
         if (!scanWorker) {
-            scanWorker = new Worker('/qrworker.js');
+            scanWorker = new Worker('{{.WorkerURL}}');
+            qlog('scanner worker created');
             scanWorker.addEventListener('message', e => {
                 scanBusy = false;
                 scanResult(e.data);
             });
-            scanWorker.addEventListener('error', () => {
+            scanWorker.addEventListener('error', e => {
+                qlog('scanner worker error ' + e.message);
                 scanBusy = false;
                 scanning = false;
                 camProgress.textContent = 'decoder stopped; close and retry';
@@ -85,6 +114,7 @@
     function scanResult(result) {
         if (!result) return;
         if (result.error) {
+            qlog('scanner error ' + result.error);
             camProgress.textContent = result.error + '; close and retry';
             scanning = false;
             if (scanWorker) scanWorker.terminate();
@@ -95,6 +125,7 @@
            receiver compares only against the last stream id) */
         if (result.sameAsLast) return;
         if (result.done) {
+            qlog('scanner complete file=' + result.fileID + ' bytes=' + result.data.byteLength);
             camProgress.textContent = 'received ' + result.name + ' - tap to save';
             setReceived(result.name, result.data);
         } else {
@@ -145,12 +176,15 @@
         camReceived.append('last received - ', a);
     }
     async function openCamera() {
+        qlog('camera open requested');
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             /* camera access needs a secure context */
             if (location.protocol !== 'https:') {
+                qlog('camera unavailable on insecure page; redirecting to https');
                 location.href = 'https://' + location.hostname + ':8443' + location.pathname;
                 return;
             }
+            qlog('camera API unavailable');
             alert('no camera available');
             return;
         }
@@ -158,6 +192,7 @@
         try {
             camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
         } catch (err) {
+            qlog('camera request failed ' + err.name + ': ' + err.message);
             alert('camera: ' + err.message);
             return;
         }
@@ -168,7 +203,9 @@
         video.srcObject = camStream;
         try {
             await video.play();
+            qlog('camera preview started width=' + video.videoWidth + ' height=' + video.videoHeight);
         } catch (err) {
+            qlog('camera preview failed ' + err.name + ': ' + err.message);
             camProgress.textContent = 'camera preview failed: ' + err.message;
         }
         const canvas = document.createElement('canvas');
@@ -192,7 +229,8 @@
                 scanWorker.postMessage(
                     { width: img.width, height: img.height, buffer: img.data.buffer },
                     [img.data.buffer]);
-            } catch {
+            } catch (err) {
+                qlog('scanner post failed ' + err.name + ': ' + err.message);
                 scanBusy = false;
                 scanning = false;
                 camProgress.textContent = 'decoder stopped; close and retry';
@@ -208,6 +246,7 @@
        fresh gesture, and this tap supplies one */
     video.addEventListener('click', saveReceived);
     camDialog.addEventListener('close', () => {
+        qlog('camera closed');
         scanning = false;
         clearInterval(scanTimer);
         video.pause();

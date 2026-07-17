@@ -14,7 +14,7 @@ import (
 	"testing"
 )
 
-func testServer(t *testing.T) (*server, string) {
+func testServerWithLogging(t *testing.T, logger *log.Logger, browserLogging bool) (*server, string) {
 	t.Helper()
 	dir := t.TempDir()
 	root, err := os.OpenRoot(dir)
@@ -22,11 +22,16 @@ func testServer(t *testing.T) (*server, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { root.Close() })
-	srv, err := newServer(root, log.New(io.Discard, ``, 0))
+	srv, err := newServer(root, logger, browserLogging)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return srv, dir
+}
+
+func testServer(t *testing.T) (*server, string) {
+	t.Helper()
+	return testServerWithLogging(t, log.New(io.Discard, ``, 0), false)
 }
 
 func uploadRequest(t *testing.T, target, name string, data []byte) *http.Request {
@@ -165,6 +170,70 @@ func TestHandlerMethodsAndOrigins(t *testing.T) {
 	srv.upload(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-origin upload status = %d, want 403", rec.Code)
+	}
+}
+
+func TestBrowserLoggingDisabled(t *testing.T) {
+	srv, _ := testServer(t)
+	handler := srv.mux()
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, `/log`, strings.NewReader(`message`)))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("disabled log endpoint status = %d, want 405", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, `/`, nil))
+	body := rec.Body.String()
+	if strings.Contains(body, `fetch('/log'`) || strings.Contains(body, `log=1`) {
+		t.Fatalf("disabled page contains browser logging code: %q", body)
+	}
+}
+
+func TestBrowserLoggingEnabledAndDefensive(t *testing.T) {
+	var logs bytes.Buffer
+	srv, _ := testServerWithLogging(t, log.New(&logs, ``, 0), true)
+	handler := srv.mux()
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, `/`, nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, `fetch('/log'`) || !strings.Contains(body, `log=1`) {
+		t.Fatalf("enabled page omits browser logging code: %q", body)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, `http://serve.test/log`, strings.NewReader("scanner ready\nforged line"))
+	req.Header.Set(`Origin`, `http://serve.test`)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("log status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	if got := logs.String(); !strings.Contains(got, `browser message="scanner ready\nforged line"`) || strings.Contains(got, "\nforged line") {
+		t.Fatalf("browser log was not safely quoted: %q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, `http://serve.test/log`, strings.NewReader(`cross origin`))
+	req.Header.Set(`Origin`, `https://other.test`)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin log status = %d, want 403", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, `http://serve.test/log`, strings.NewReader(strings.Repeat(`x`, maxClientLog+1)))
+	req.Header.Set(`Origin`, `http://serve.test`)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized log status = %d, want 413", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, `/log`, nil))
+	if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get(`Allow`) != http.MethodPost {
+		t.Fatalf("wrong-method log response = %d Allow=%q", rec.Code, rec.Header().Get(`Allow`))
 	}
 }
 

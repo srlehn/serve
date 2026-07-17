@@ -12,6 +12,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"html/template"
 	"io"
@@ -38,6 +39,7 @@ const (
 	httpPort      = `:8000`
 	httpsPort     = `:8443`
 	maxQRFileSize = 64 << 20
+	maxClientLog  = 16 << 10
 )
 
 //go:embed index.html.template
@@ -60,17 +62,18 @@ var (
 )
 
 type server struct {
-	root     *os.Root
-	template *template.Template
-	logger   *log.Logger
+	root           *os.Root
+	template       *template.Template
+	logger         *log.Logger
+	browserLogging bool
 }
 
-func newServer(root *os.Root, logger *log.Logger) (*server, error) {
+func newServer(root *os.Root, logger *log.Logger, browserLogging bool) (*server, error) {
 	tp, err := template.New(`index`).Parse(pageTemplate)
 	if err != nil {
 		return nil, err
 	}
-	return &server{root: root, template: tp, logger: logger}, nil
+	return &server{root: root, template: tp, logger: logger, browserLogging: browserLogging}, nil
 }
 
 func (s *server) mux() *http.ServeMux {
@@ -79,6 +82,9 @@ func (s *server) mux() *http.ServeMux {
 	mux.HandleFunc("/upload", s.upload)
 	mux.HandleFunc("/qr/", s.qr)
 	mux.HandleFunc("/qrurl", s.qrurl)
+	if s.browserLogging {
+		mux.HandleFunc("/log", s.clientLog)
+	}
 	// instantiateStreaming requires the exact wasm content type.
 	mux.HandleFunc("/qrstream.wasm", serveStatic(`application/wasm`, qrWASM))
 	mux.HandleFunc("/wasm_exec.js", serveStatic(`text/javascript`, wasmExec))
@@ -88,12 +94,15 @@ func (s *server) mux() *http.ServeMux {
 }
 
 func main() {
+	browserLogging := flag.Bool(`browser-log`, false, `log browser scanner diagnostics`)
+	flag.Parse()
+
 	root, err := os.OpenRoot(`.`)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer root.Close()
-	srv, err := newServer(root, log.Default())
+	srv, err := newServer(root, log.Default(), *browserLogging)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -495,10 +504,12 @@ type pageEntry struct {
 }
 
 type pageData struct {
-	Files     []pageEntry
-	UploadURL string
-	QRURL     string
-	ShowQR    bool
+	Files          []pageEntry
+	UploadURL      string
+	QRURL          string
+	WorkerURL      string
+	ShowQR         bool
+	BrowserLogging bool
 }
 
 func (s *server) page(w http.ResponseWriter, req *http.Request) {
@@ -568,11 +579,17 @@ func (s *server) page(w http.ResponseWriter, req *http.Request) {
 		uploadURL += `?` + url.Values{`dir`: {filepath.ToSlash(name)}}.Encode()
 	}
 	qrURL := `/qrurl?` + url.Values{`path`: {req.URL.Path}}.Encode()
+	workerURL := `/qrworker.js`
+	if s.browserLogging {
+		workerURL += `?log=1`
+	}
 	data := pageData{
-		Files:     entries,
-		UploadURL: uploadURL,
-		QRURL:     qrURL,
-		ShowQR:    !loopbackHost(req.Host) || altHost() != ``,
+		Files:          entries,
+		UploadURL:      uploadURL,
+		QRURL:          qrURL,
+		WorkerURL:      workerURL,
+		ShowQR:         !loopbackHost(req.Host) || altHost() != ``,
+		BrowserLogging: s.browserLogging,
 	}
 	var body bytes.Buffer
 	if err := s.template.Execute(&body, data); err != nil {
@@ -607,6 +624,33 @@ func sameOrigin(req *http.Request) bool {
 		scheme = `https`
 	}
 	return u.Scheme == scheme && u.Host == req.Host
+}
+
+func (s *server) clientLog(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if !sameOrigin(req) {
+		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, maxClientLog))
+	if err != nil {
+		status := http.StatusBadRequest
+		message := `could not read browser log`
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			status = http.StatusRequestEntityTooLarge
+			message = `browser log is too large`
+		}
+		s.requestError(w, req, status, message, err)
+		return
+	}
+	if message := strings.TrimSpace(string(body)); message != `` {
+		s.logger.Printf("browser message=%q", message)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *server) upload(w http.ResponseWriter, req *http.Request) {
