@@ -51,6 +51,7 @@
         {{end}}
     </div>
     <div class="split right">
+        {{if .UploadURL}}
         <form id="uploadForm" method="post" action="{{.UploadURL}}" enctype="multipart/form-data">
             <div>
                 <label for="file">Choose file to upload</label>
@@ -61,6 +62,7 @@
             </div>
             <p id="uploadStatus" role="status" aria-live="polite"></p>
         </form>
+        {{end}}
         {{if .ShowQR}}<img src="{{.QRURL}}" alt="this page as QR code" title="scan to open this page on another device"
             style="position: fixed; bottom: 8px; right: 8px; width: 128px; height: 128px;">{{end}}
     </div>
@@ -122,6 +124,7 @@
     function qlog() {}
     {{end}}
 
+    {{if .UploadURL}}
     const uploadForm = document.querySelector('#uploadForm');
     const uploadInput = uploadForm.querySelector('input[type="file"]');
     const uploadButton = uploadForm.querySelector('button[type="submit"]');
@@ -178,6 +181,7 @@
         request.open('POST', uploadForm.action);
         request.send(data);
     });
+    {{end}}
 
     const qrDialog = document.querySelector('.qr-dialog');
     const stream = qrDialog.querySelector('img');

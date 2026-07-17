@@ -131,7 +131,7 @@ var (
 
 type server struct {
 	files          fs.FS
-	root           *os.Root
+	uploadRoot     *os.Root
 	browser        *filebrowser.Handler
 	template       *template.Template
 	logger         *log.Logger
@@ -139,12 +139,9 @@ type server struct {
 	uploadLimit    int64
 }
 
-func newServer(files fs.FS, root *os.Root, logger *log.Logger, browserLogging bool, uploadLimit int64) (*server, error) {
+func newServer(files fs.FS, uploadRoot *os.Root, logger *log.Logger, browserLogging bool, uploadLimit int64) (*server, error) {
 	if uploadLimit < 0 {
 		return nil, errors.New(`upload limit must not be negative`)
-	}
-	if root == nil {
-		return nil, errors.New(`writable root must not be nil`)
 	}
 	tp, err := template.New(`index`).Parse(pageTemplate)
 	if err != nil {
@@ -152,7 +149,7 @@ func newServer(files fs.FS, root *os.Root, logger *log.Logger, browserLogging bo
 	}
 	s := &server{
 		files:          files,
-		root:           root,
+		uploadRoot:     uploadRoot,
 		template:       tp,
 		logger:         logger,
 		browserLogging: browserLogging,
@@ -172,7 +169,9 @@ func newServer(files fs.FS, root *os.Root, logger *log.Logger, browserLogging bo
 func (s *server) mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.page)
-	mux.HandleFunc("/upload", s.upload)
+	if s.uploadRoot != nil {
+		mux.HandleFunc("/upload", s.upload)
+	}
 	mux.HandleFunc("/qr/", s.qr)
 	mux.HandleFunc("/qrurl", s.qrurl)
 	if s.browserLogging {
@@ -492,11 +491,9 @@ func localName(name string) (string, error) {
 	return filepath.Localize(name)
 }
 
-// rejectSymlinkDirectories checks every path component before opening
-// it. Final symlinks to regular files are allowed, but a directory
-// symlink is never used for listing, downloading, QR transfer, or
-// upload placement. os.Root independently prevents links escaping the
-// served tree.
+// rejectSymlinkDirectories checks every upload destination component.
+// A directory symlink is never used for upload placement; os.Root also
+// prevents links from escaping the writable tree.
 func rejectSymlinkDirectories(root *os.Root, name string) error {
 	if name == `.` {
 		return nil
@@ -522,11 +519,11 @@ func rejectSymlinkDirectories(root *os.Root, name string) error {
 	return nil
 }
 
-func (s *server) openPath(name string) (*os.File, os.FileInfo, error) {
-	if err := rejectSymlinkDirectories(s.root, name); err != nil {
+func (s *server) openUploadPath(name string) (*os.File, os.FileInfo, error) {
+	if err := rejectSymlinkDirectories(s.uploadRoot, name); err != nil {
 		return nil, nil, err
 	}
-	f, err := s.root.Open(name)
+	f, err := s.uploadRoot.Open(name)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -654,9 +651,12 @@ func (s *server) renderDirectory(w io.Writer, req *http.Request, directory fileb
 		}
 		entries = append(entries, entry)
 	}
-	uploadURL := `/upload`
-	if directory.Name != `.` {
-		uploadURL += `?` + url.Values{`dir`: {directory.Name}}.Encode()
+	uploadURL := ``
+	if s.uploadRoot != nil {
+		uploadURL = `/upload`
+		if directory.Name != `.` {
+			uploadURL += `?` + url.Values{`dir`: {directory.Name}}.Encode()
+		}
 	}
 	qrURL := `/qrurl?` + url.Values{`path`: {req.URL.Path}}.Encode()
 	workerURL := `/qrworker.js`
@@ -759,6 +759,10 @@ func (s *server) clientLog(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *server) upload(w http.ResponseWriter, req *http.Request) {
+	if s.uploadRoot == nil {
+		http.NotFound(w, req)
+		return
+	}
 	if req.Method != http.MethodPost {
 		methodNotAllowed(w, http.MethodPost)
 		return
@@ -780,7 +784,7 @@ func (s *server) upload(w http.ResponseWriter, req *http.Request) {
 		s.requestError(w, req, http.StatusBadRequest, `invalid upload directory`, err)
 		return
 	}
-	d, info, err := s.openPath(dir)
+	d, info, err := s.openUploadPath(dir)
 	if err != nil {
 		http.NotFound(w, req)
 		return
@@ -816,7 +820,7 @@ func (s *server) upload(w http.ResponseWriter, req *http.Request) {
 			p.Close()
 			continue
 		}
-		written, err := storeUpload(s.root, dir, name, p)
+		written, err := storeUpload(s.uploadRoot, dir, name, p)
 		p.Close()
 		if err != nil {
 			status := http.StatusInternalServerError

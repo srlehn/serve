@@ -419,6 +419,44 @@ func TestServerReadSideUsesProvidedFS(t *testing.T) {
 	}
 }
 
+func TestServerWithoutUploadRootIsReadOnly(t *testing.T) {
+	srv, err := newServer(
+		fstest.MapFS{`upload`: {Data: []byte(`ordinary file`)}},
+		nil,
+		log.New(io.Discard, ``, 0),
+		false,
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := srv.mux()
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, `/`, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read-only listing status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, unwanted := range []string{`id="uploadForm"`, `uploadForm.addEventListener`} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("read-only listing contains %q", unwanted)
+		}
+	}
+
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, `/upload`, nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != `ordinary file` {
+		t.Fatalf("read-only /upload file response = %d %q", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, `/upload`, nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("read-only upload POST status = %d, want 405", rec.Code)
+	}
+}
+
 func TestHTTPSPageURLReplacesPortAndPreservesTarget(t *testing.T) {
 	tests := []struct {
 		target string
