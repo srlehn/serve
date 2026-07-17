@@ -64,16 +64,35 @@
         {{if .ShowQR}}<img src="{{.QRURL}}" alt="this page as QR code" title="scan to open this page on another device"
             style="position: fixed; bottom: 8px; right: 8px; width: 128px; height: 128px;">{{end}}
     </div>
-    <button title="receive a file by scanning its QR codes with this device's camera"><svg viewBox="0 0 16 16" width="48" height="48" aria-hidden="true"><path fill="currentColor" d="M1 1h4v2H3v2H1zM11 1h4v4h-2V3h-2zM1 11h2v2h2v2H1zM11 15v-2h2v-2h2v4z"/><circle cx="8" cy="8" r="2.5" fill="currentColor"/></svg></button>
-    <dialog>
+    <button class="camera-open" type="button" data-https-url="{{.HTTPSURL}}"
+        title="receive a file by scanning its QR codes with this device's camera" aria-label="open QR scanner"><svg
+        viewBox="0 0 16 16" width="48" height="48" aria-hidden="true"><path fill="currentColor" d="M1 1h4v2H3v2H1zM11 1h4v4h-2V3h-2zM1 11h2v2h2v2H1zM11 15v-2h2v-2h2v4z"/><circle cx="8" cy="8" r="2.5" fill="currentColor"/></svg></button>
+    <dialog class="qr-dialog">
         <img alt="QR codes">
         <p></p>
     </dialog>
-    <dialog>
-        <button class="close" title="close" aria-label="close">&times;</button>
-        <video playsinline webkit-playsinline muted></video>
-        <p class="progress"></p>
-        <p class="received"></p>
+    <dialog class="camera-dialog" aria-labelledby="camera-title">
+        <div class="camera-shell">
+            <header class="camera-header">
+                <strong id="camera-title">receive QR stream</strong>
+                <button class="close" type="button" title="close" aria-label="close scanner">&times;</button>
+            </header>
+            <div class="camera-stage">
+                <video playsinline webkit-playsinline muted aria-label="camera preview"></video>
+                <svg class="scan-guide" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                    <path d="M20 6H6v14M80 6h14v14M94 80v14H80M20 94H6V80"/>
+                </svg>
+                <div class="camera-status">
+                    <p class="progress" role="status" aria-live="polite"></p>
+                    <progress class="frame-progress" max="1" value="0" hidden
+                        aria-label="received QR stream frames"></progress>
+                </div>
+            </div>
+            <div class="camera-actions" hidden>
+                <button class="save" type="button" hidden>save received file</button>
+                <button class="restart" type="button" hidden>restart decoder</button>
+            </div>
+        </div>
     </dialog>
     <script>
     {{if .BrowserLogging}}
@@ -160,21 +179,21 @@
         request.send(data);
     });
 
-    const dialog = document.querySelector('dialog:has(img)');
-    const stream = dialog.querySelector('img');
-    const caption = dialog.querySelector('p');
-    for (const link of document.querySelectorAll('a[href^="/qr/"]')) {
+    const qrDialog = document.querySelector('.qr-dialog');
+    const stream = qrDialog.querySelector('img');
+    const caption = qrDialog.querySelector('p');
+    for (const link of document.querySelectorAll('.qr-transfer')) {
         link.addEventListener('click', e => {
             e.preventDefault();
             stream.src = link.getAttribute('href');
             caption.textContent = decodeURIComponent(link.pathname.split('/').pop());
-            dialog.showModal();
+            qrDialog.showModal();
         });
     }
     /* click on the backdrop (the dialog element itself) closes; Esc is built in */
-    dialog.addEventListener('click', e => { if (e.target === dialog) dialog.close(); });
+    qrDialog.addEventListener('click', e => { if (e.target === qrDialog) qrDialog.close(); });
     /* swap in a blank image on close so the browser aborts the stream */
-    dialog.addEventListener('close', () => {
+    qrDialog.addEventListener('close', () => {
         stream.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
     });
 
@@ -183,38 +202,87 @@
        server, exact bytes) running in a worker; the file is saved on
        this device. Scanning continues after a file completes so the
        next QR-code stream is picked up without reopening. */
-    const camDialog = document.querySelector('dialog:has(video)');
+    const cameraButton = document.querySelector('.camera-open');
+    const camDialog = document.querySelector('.camera-dialog');
     const video = camDialog.querySelector('video');
     const camProgress = camDialog.querySelector('.progress');
-    const camReceived = camDialog.querySelector('.received');
+    const frameProgress = camDialog.querySelector('.frame-progress');
+    const cameraActions = camDialog.querySelector('.camera-actions');
+    const saveButton = camDialog.querySelector('.save');
+    const restartButton = camDialog.querySelector('.restart');
     video.disablePictureInPicture = true; /* no popout into native PiP */
-    let scanTimer, camStream, scanWorker, scanBusy, scanning;
+    let scanTimer, camStream, scanWorker, scanBusy, scanning, openingCamera;
+    let cameraGeneration = 0;
+
+    function resetFrameProgress() {
+        frameProgress.value = 0;
+        frameProgress.max = 1;
+        frameProgress.hidden = true;
+    }
+    function stopDecoder() {
+        const worker = scanWorker;
+        scanWorker = null;
+        scanBusy = false;
+        if (worker) worker.terminate();
+    }
+    function renderCameraActions() {
+        cameraActions.hidden = saveButton.hidden && restartButton.hidden;
+    }
+    function decoderFailed(message) {
+        qlog('scanner stopped ' + message);
+        scanning = false;
+        stopDecoder();
+        resetFrameProgress();
+        camProgress.textContent = message;
+        restartButton.hidden = false;
+        renderCameraActions();
+    }
     function loadDecoder() {
-        if (!scanWorker) {
-            scanWorker = new Worker('{{.WorkerURL}}');
-            qlog('scanner worker created');
-            scanWorker.addEventListener('message', e => {
-                scanBusy = false;
-                scanResult(e.data);
-            });
-            scanWorker.addEventListener('error', e => {
-                qlog('scanner worker error ' + e.message);
-                scanBusy = false;
-                scanning = false;
-                camProgress.textContent = 'decoder stopped; close and retry';
-                scanWorker.terminate();
-                scanWorker = null;
-            });
+        if (scanWorker) return true;
+        let worker;
+        try {
+            worker = new Worker('{{.WorkerURL}}');
+        } catch (err) {
+            decoderFailed('decoder could not start: ' + err.message);
+            return false;
         }
+        scanWorker = worker;
+        scanBusy = false;
+        restartButton.hidden = true;
+        renderCameraActions();
+        qlog('scanner worker created');
+        worker.addEventListener('message', e => {
+            if (worker !== scanWorker) return;
+            scanBusy = false;
+            scanResult(e.data);
+        });
+        worker.addEventListener('error', e => {
+            if (worker !== scanWorker) return;
+            decoderFailed('decoder stopped: ' + (e.message || 'worker error'));
+        });
+        worker.addEventListener('messageerror', () => {
+            if (worker !== scanWorker) return;
+            decoderFailed('decoder returned an unreadable result');
+        });
+        return true;
+    }
+    function restartDecoder() {
+        stopDecoder();
+        camProgress.textContent = 'restarting decoder';
+        if (!loadDecoder()) return;
+        scanning = Boolean(camDialog.open && camStream);
+        camProgress.textContent = 'point the camera at the QR codes';
     }
     function scanResult(result) {
         if (!result) return;
         if (result.error) {
             qlog('scanner error ' + result.error);
-            camProgress.textContent = result.error + '; close and retry';
-            scanning = false;
-            if (scanWorker) scanWorker.terminate();
-            scanWorker = null;
+            if (result.recoverable) {
+                resetFrameProgress();
+                camProgress.textContent = 'stream reset: ' + result.error;
+                return;
+            }
+            decoderFailed(result.error);
             return;
         }
         /* the just-completed stream is still in view - ignore it (the
@@ -222,10 +290,18 @@
         if (result.sameAsLast) return;
         if (result.done) {
             qlog('scanner complete file=' + result.fileID + ' bytes=' + result.data.byteLength);
-            camProgress.textContent = 'received ' + result.name + ' - tap to save';
+            frameProgress.hidden = false;
+            frameProgress.max = Math.max(1, Number(result.total) || 1);
+            frameProgress.value = frameProgress.max;
+            camProgress.textContent = 'received ' + result.name;
             setReceived(result.name, result.data);
         } else {
-            camProgress.textContent = result.have + ' / ' + result.total + ' frames';
+            const total = Math.max(1, Number(result.total) || 1);
+            const have = Math.min(total, Math.max(0, Number(result.have) || 0));
+            frameProgress.hidden = false;
+            frameProgress.max = total;
+            frameProgress.value = have;
+            camProgress.textContent = 'receiving ' + have + ' of ' + total + ' frames';
         }
     }
 
@@ -233,8 +309,8 @@
        the camera overlay is opened, until ten minutes pass. The save
        sheet fires automatically on completion; iOS only allows
        navigator.share inside a fresh user gesture, so if a long
-       multi-part scan has outlasted that activation the save link (or
-       a tap anywhere on the overlay) re-fires it. */
+       multi-part scan has outlasted that activation the save button
+       or a tap on the preview re-fires it. */
     const RECEIVED_TTL = 10 * 60 * 1000;
     let received, receivedTimer;
     function setReceived(name, data) {
@@ -253,49 +329,71 @@
         const file = new File([received.data], received.name, { type: 'application/octet-stream' });
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
             navigator.share({ files: [file] })
-                .catch(() => {});
+                .catch(err => {
+                    if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
+                        qlog('save share failed ' + err.name + ': ' + err.message);
+                        camProgress.textContent = 'save failed: ' + err.message;
+                    } else if (err.name === 'NotAllowedError') {
+                        qlog('automatic save needs a fresh user gesture');
+                    }
+                });
         } else {
             const dl = document.createElement('a');
-            dl.href = URL.createObjectURL(file);
+            const objectURL = URL.createObjectURL(file);
+            dl.href = objectURL;
             dl.download = received.name;
             dl.click();
+            setTimeout(() => URL.revokeObjectURL(objectURL), 1000);
         }
     }
     function renderReceived() {
         if (received && Date.now() - received.time > RECEIVED_TTL) received = null;
-        camReceived.textContent = '';
-        if (!received) return;
-        const a = document.createElement('a');
-        a.href = '#';
-        a.textContent = 'save ' + received.name;
-        a.addEventListener('click', e => { e.preventDefault(); saveReceived(); });
-        camReceived.append('last received - ', a);
+        saveButton.hidden = !received;
+        saveButton.textContent = received ? 'save ' + received.name : 'save received file';
+        renderCameraActions();
     }
     async function openCamera() {
+        if (openingCamera || camDialog.open) return;
         qlog('camera open requested');
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             /* camera access needs a secure context */
             if (location.protocol !== 'https:') {
                 qlog('camera unavailable on insecure page; redirecting to https');
-                location.href = 'https://' + location.hostname + ':8443' + location.pathname;
+                location.assign(cameraButton.dataset.httpsUrl);
                 return;
             }
             qlog('camera API unavailable');
-            alert('no camera available');
+            camDialog.showModal();
+            camProgress.textContent = 'camera API unavailable in this browser';
             return;
         }
+        const generation = ++cameraGeneration;
+        openingCamera = true;
+        cameraButton.disabled = true;
+        resetFrameProgress();
+        restartButton.hidden = true;
+        renderCameraActions();
+        camProgress.textContent = 'requesting camera permission';
+        renderReceived();
+        camDialog.showModal();
         loadDecoder();
         try {
             camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
         } catch (err) {
             qlog('camera request failed ' + err.name + ': ' + err.message);
-            alert('camera: ' + err.message);
+            camProgress.textContent = 'camera unavailable: ' + err.message;
+            stopDecoder();
+            openingCamera = false;
+            cameraButton.disabled = false;
+            return;
+        }
+        if (generation !== cameraGeneration || !camDialog.open) {
+            for (const track of camStream.getTracks()) track.stop();
+            camStream = null;
             return;
         }
         scanBusy = false;
         camProgress.textContent = 'point the camera at the QR codes';
-        renderReceived(); /* re-show a still-valid earlier receival */
-        if (!camDialog.open) camDialog.showModal();
         video.srcObject = camStream;
         try {
             await video.play();
@@ -303,10 +401,29 @@
         } catch (err) {
             qlog('camera preview failed ' + err.name + ': ' + err.message);
             camProgress.textContent = 'camera preview failed: ' + err.message;
+            stopDecoder();
+            for (const track of camStream.getTracks()) track.stop();
+            camStream = null;
+            video.srcObject = null;
+            openingCamera = false;
+            cameraButton.disabled = false;
+            return;
         }
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) {
+            camProgress.textContent = 'camera frame processing is unavailable';
+            stopDecoder();
+            for (const track of camStream.getTracks()) track.stop();
+            camStream = null;
+            video.srcObject = null;
+            openingCamera = false;
+            cameraButton.disabled = false;
+            return;
+        }
         scanning = true;
+        openingCamera = false;
+        cameraButton.disabled = false;
         clearInterval(scanTimer);
         scanTimer = setInterval(() => {
             /* one frame in flight at a time: the worker's decode
@@ -314,11 +431,17 @@
             if (!scanning || scanBusy || !video.videoWidth) return;
             /* downscale: full camera resolution costs decode time
                without helping screen-displayed codes */
-            const scale = Math.min(1, 1024 / video.videoWidth);
-            canvas.width = Math.round(video.videoWidth * scale);
-            canvas.height = Math.round(video.videoHeight * scale);
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            let img;
+            try {
+                const scale = Math.min(1, 1024 / video.videoWidth);
+                canvas.width = Math.round(video.videoWidth * scale);
+                canvas.height = Math.round(video.videoHeight * scale);
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            } catch (err) {
+                decoderFailed('camera frame failed: ' + err.message);
+                return;
+            }
             if (!scanWorker) return;
             scanBusy = true;
             try {
@@ -326,25 +449,31 @@
                     { width: img.width, height: img.height, buffer: img.data.buffer },
                     [img.data.buffer]);
             } catch (err) {
-                qlog('scanner post failed ' + err.name + ': ' + err.message);
-                scanBusy = false;
-                scanning = false;
-                camProgress.textContent = 'decoder stopped; close and retry';
+                decoderFailed('decoder stopped: ' + err.message);
             }
         }, 100);
     }
-    document.querySelector('body > button').addEventListener('click', openCamera);
+    cameraButton.addEventListener('click', openCamera);
     /* explicit close only - no backdrop-tap close, which stray
        touches kept triggering while holding the phone to scan */
     camDialog.querySelector('.close').addEventListener('click', () => camDialog.close());
+    saveButton.addEventListener('click', saveReceived);
+    restartButton.addEventListener('click', restartDecoder);
     /* a tap on the preview re-fires the save sheet for the pending
        file: on iOS the auto-attempt at completion may have lacked a
        fresh gesture, and this tap supplies one */
     video.addEventListener('click', saveReceived);
     camDialog.addEventListener('close', () => {
         qlog('camera closed');
+        cameraGeneration++;
+        openingCamera = false;
+        cameraButton.disabled = false;
         scanning = false;
         clearInterval(scanTimer);
+        stopDecoder();
+        restartButton.hidden = true;
+        renderCameraActions();
+        resetFrameProgress();
         video.pause();
         if (camStream) for (const t of camStream.getTracks()) t.stop();
         camStream = null;

@@ -412,6 +412,19 @@ func loopbackHost(hostport string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+func httpsPageURL(req *http.Request) string {
+	host := req.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	} else {
+		host = strings.Trim(host, `[]`)
+	}
+	target := *req.URL
+	target.Scheme = `https`
+	target.Host = net.JoinHostPort(host, strings.TrimPrefix(httpsPort, `:`))
+	return target.String()
+}
+
 // qrurl serves a QR code of the URL this request arrived on - the one
 // address the connecting browser has proven reachable. For loopback
 // requests (where that URL would point the scanning device at
@@ -600,6 +613,7 @@ type pageData struct {
 	UploadURL      string
 	QRURL          string
 	WorkerURL      string
+	HTTPSURL       string
 	ShowQR         bool
 	BrowserLogging bool
 }
@@ -683,6 +697,7 @@ func (s *server) page(w http.ResponseWriter, req *http.Request) {
 		UploadURL:      uploadURL,
 		QRURL:          qrURL,
 		WorkerURL:      workerURL,
+		HTTPSURL:       httpsPageURL(req),
 		ShowQR:         !loopbackHost(req.Host) || altHost() != ``,
 		BrowserLogging: s.browserLogging,
 	}

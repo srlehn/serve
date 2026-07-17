@@ -44,7 +44,7 @@ onmessage = async e => {
         await ready;
     } catch (err) {
         wlog('wasm load failed ' + err.name + ': ' + err.message);
-        postMessage({ error: 'decoder failed to load: ' + err.message });
+        postMessage({ error: 'decoder failed to load: ' + err.message, recoverable: false });
         return;
     }
     const { width, height, buffer } = e.data;
@@ -54,7 +54,7 @@ onmessage = async e => {
         result = qrstreamScanFrame({ width, height, data: new Uint8Array(buffer) });
     } catch (err) {
         wlog('decode failed ' + err.name + ': ' + err.message);
-        postMessage({ error: 'decode error: ' + err.message });
+        postMessage({ error: 'decode error: ' + err.message, recoverable: false });
         return;
     }
     scans++;
@@ -64,6 +64,10 @@ onmessage = async e => {
     reportStats(Boolean(result && result.done));
     if (!result) {
         postMessage(null);
+        return;
+    }
+    if (result.error) {
+        postMessage({ error: String(result.error), recoverable: Boolean(result.recoverable) });
         return;
     }
     if (result.sameAsLast) {

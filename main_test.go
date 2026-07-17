@@ -385,6 +385,26 @@ func TestDirectoryListingEscapesFileURLs(t *testing.T) {
 	}
 }
 
+func TestHTTPSPageURLReplacesPortAndPreservesTarget(t *testing.T) {
+	tests := []struct {
+		target string
+		host   string
+		want   string
+	}{
+		{`http://serve.test:8000/dir/?sort=name`, `serve.test:8000`, `https://serve.test:8443/dir/?sort=name`},
+		{`http://[2001:db8::1]:8000/a%20b`, `[2001:db8::1]:8000`, `https://[2001:db8::1]:8443/a%20b`},
+		{`http://serve.test:8000/a%2Fb?`, `serve.test:8000`, `https://serve.test:8443/a%2Fb?`},
+		{`http://localhost/plain`, `localhost`, `https://localhost:8443/plain`},
+	}
+	for _, tt := range tests {
+		req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+		req.Host = tt.host
+		if got := httpsPageURL(req); got != tt.want {
+			t.Errorf("httpsPageURL(%q, host %q) = %q, want %q", tt.target, tt.host, got, tt.want)
+		}
+	}
+}
+
 func TestListingFileIconClassification(t *testing.T) {
 	tests := []struct {
 		name string
@@ -521,6 +541,62 @@ func TestUploadPageUsesControlledSubmission(t *testing.T) {
 	for _, unwanted := range []string{`target="dummyFrame"`, `<iframe`} {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("page still contains %q", unwanted)
+		}
+	}
+}
+
+func TestCameraScannerProvidesRecoveryUI(t *testing.T) {
+	srv, _ := testServer(t)
+	handler := srv.mux()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, `http://serve.test:8000/?target=file`, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("page status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`data-https-url="https://serve.test:8443/?target=file"`,
+		`class="camera-dialog"`,
+		`class="scan-guide"`,
+		`class="frame-progress"`,
+		`class="camera-actions" hidden`,
+		`class="save"`,
+		`class="restart"`,
+		`location.assign(cameraButton.dataset.httpsUrl)`,
+		`worker.addEventListener('messageerror'`,
+		`if (result.recoverable)`,
+		`function restartDecoder()`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("scanner page does not contain %q", want)
+		}
+	}
+	if strings.Contains(body, `location.hostname + ':8443'`) {
+		t.Error("scanner page still constructs the HTTPS port in JavaScript")
+	}
+
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, `/qrworker.js`, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("worker status = %d", rec.Code)
+	}
+	worker := rec.Body.String()
+	for _, want := range []string{
+		`if (result.error)`,
+		`recoverable: Boolean(result.recoverable)`,
+		`recoverable: false`,
+	} {
+		if !strings.Contains(worker, want) {
+			t.Errorf("scanner worker does not contain %q", want)
+		}
+	}
+
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, `/style.css`, nil))
+	styles := rec.Body.String()
+	for _, want := range []string{`100dvh`, `object-fit: contain`, `.camera-actions[hidden]`} {
+		if !strings.Contains(styles, want) {
+			t.Errorf("scanner styles do not contain %q", want)
 		}
 	}
 }

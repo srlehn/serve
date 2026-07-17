@@ -2,7 +2,7 @@
 
 // The browser-side qrstream receiver. Exposes
 //
-//	qrstreamScanFrame(imageData) -> {fileID, have, total, done, sameAsLast, name?, data?} | null
+//	qrstreamScanFrame(imageData) -> {fileID, have, total, done, sameAsLast, name?, data?} | {error, recoverable} | null
 //
 // on the JS global: the page draws a camera frame to a canvas and
 // hands the ImageData here. Decoding and collection run entirely in
@@ -71,7 +71,9 @@ func main() {
 
 		prog, err := c.AddBytes(raw)
 		if err != nil {
-			return js.Null()
+			c.Forget(id)
+			collecting = false
+			return setError(result, err)
 		}
 		result.Set(`have`, prog.Have)
 		result.Set(`total`, prog.Total)
@@ -79,7 +81,9 @@ func main() {
 		if prog.Done {
 			name, data, err := c.FileByID(id)
 			if err != nil {
-				return js.Null()
+				c.Forget(id)
+				collecting = false
+				return setError(result, err)
 			}
 			c.Forget(id) // free the assembled frames
 			lastID, haveLast = id, true
@@ -89,6 +93,12 @@ func main() {
 		return result
 	}))
 	select {} // keep the Go runtime alive for callbacks
+}
+
+func setError(result js.Value, err error) js.Value {
+	result.Set(`error`, err.Error())
+	result.Set(`recoverable`, true)
+	return result
 }
 
 func setFile(result js.Value, name string, data []byte) {

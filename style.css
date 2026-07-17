@@ -100,10 +100,10 @@ a {
 }
 
 /* camera scan button, mirroring the page QR badge bottom-right */
-body>button {
+.camera-open {
     position: fixed;
-    bottom: 8px;
-    left: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom, 0px));
+    left: max(8px, env(safe-area-inset-left, 0px));
     z-index: 2;
     width: 48px;
     height: 48px;
@@ -114,9 +114,15 @@ body>button {
     cursor: pointer;
 }
 
-body>button svg {
+.camera-open svg {
     width: 100%;
     height: 100%;
+}
+
+.camera-open:focus-visible,
+.camera-dialog button:focus-visible {
+    outline: 3px solid var(--link);
+    outline-offset: 3px;
 }
 
 #uploadForm {
@@ -134,6 +140,7 @@ body>button svg {
 }
 
 dialog {
+    box-sizing: border-box;
     border: 0;
     border-radius: 4px;
     padding: 8px;
@@ -145,39 +152,160 @@ dialog::backdrop {
     background: var(--backdrop);
 }
 
-/* as large as the viewport allows: scanning works better the
+/* as large as the viewport allows: displaying works better the
    bigger the symbol is on screen */
-dialog img,
-dialog video {
+.qr-dialog img {
     display: block;
     width: 94vmin;
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 72px);
+    object-fit: contain;
     image-rendering: pixelated;
 }
 
-dialog p {
+.qr-dialog p {
     margin: 6px 0 0;
     text-align: center;
     font-family: monospace;
 }
 
-dialog .close {
-    position: absolute;
-    top: 4px;
-    right: 8px;
+.camera-dialog {
+    width: min(960px, calc(100vw - 16px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
+    height: min(900px, calc(100vh - 16px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)));
+    height: min(900px, calc(100dvh - 16px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)));
+    max-width: none;
+    max-height: none;
+    padding: 0;
+    overflow: hidden;
+}
+
+.camera-shell {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+}
+
+.camera-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 44px;
+    padding: max(4px, env(safe-area-inset-top, 0px)) 8px 4px;
+}
+
+.camera-header .close {
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
     background: none;
-    border: 0;
+    border: 1px solid transparent;
+    border-radius: 4px;
     color: inherit;
-    font-size: 24px;
+    font-size: 30px;
     line-height: 1;
     cursor: pointer;
 }
 
-.received a {
-    display: inline-block;
-    margin-top: 4px;
+.camera-header .close:hover {
+    border-color: var(--border);
+}
+
+.camera-stage {
+    position: relative;
+    display: grid;
+    place-items: center;
+    min-height: 0;
+    overflow: hidden;
+    background: #000000;
+}
+
+.camera-stage video {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    background: #000000;
+}
+
+.scan-guide {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    color: #ffffff;
+    filter: drop-shadow(0 0 2px #000000);
+    pointer-events: none;
+}
+
+.scan-guide path {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 3;
+    stroke-linecap: square;
+    vector-effect: non-scaling-stroke;
+}
+
+.camera-status {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.72);
+    color: #ffffff;
+    pointer-events: none;
+}
+
+.camera-status p {
+    margin: 0;
+    overflow-wrap: anywhere;
+    text-align: center;
+    font-family: monospace;
+}
+
+.frame-progress {
+    display: block;
+    width: 100%;
+    height: 0.5rem;
+    margin-top: 5px;
+    accent-color: #5cb8ff;
+}
+
+.frame-progress[hidden] {
+    display: none;
+}
+
+.camera-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-height: 44px;
+    padding: 8px 8px max(8px, env(safe-area-inset-bottom, 0px));
+}
+
+.camera-actions[hidden] {
+    display: none;
+}
+
+.camera-actions button {
+    max-width: 100%;
+    min-height: 44px;
     padding: 8px 14px;
     border: 1px solid currentColor;
     border-radius: 4px;
+    background: var(--surface-bg);
+    color: inherit;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+
+.camera-actions .save {
     font-weight: bold;
-    text-decoration: none;
 }
