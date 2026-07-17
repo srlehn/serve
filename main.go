@@ -601,11 +601,12 @@ const (
 )
 
 type pageEntry struct {
-	Name   string
-	Href   string
-	QRHref string
-	Note   string
-	Icon   listingIcon
+	Name     string
+	Href     string
+	QRHref   string
+	Note     string
+	Icon     listingIcon
+	isFolder bool
 }
 
 type pageData struct {
@@ -651,7 +652,6 @@ func (s *server) page(w http.ResponseWriter, req *http.Request) {
 		s.requestError(w, req, http.StatusInternalServerError, `could not read directory`, err)
 		return
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
 	entries := make([]pageEntry, 0, len(files))
 	for _, file := range files {
 		entry := pageEntry{Name: file.Name(), Icon: listingFileIcon(file.Name())}
@@ -659,6 +659,7 @@ func (s *server) page(w http.ResponseWriter, req *http.Request) {
 		switch {
 		case file.IsDir():
 			entry.Icon = listingIconFolder
+			entry.isFolder = true
 			entry.Href = url.PathEscape(file.Name()) + `/`
 		case file.Mode()&os.ModeSymlink != 0:
 			target, err := s.root.Stat(entryName)
@@ -668,6 +669,7 @@ func (s *server) page(w http.ResponseWriter, req *http.Request) {
 				entry.Note = `unavailable symlink`
 			case target.IsDir():
 				entry.Icon = listingIconFolder
+				entry.isFolder = true
 				entry.Note = `symlink directory not served`
 			case target.Mode().IsRegular():
 				entry.Href = url.PathEscape(file.Name())
@@ -683,6 +685,12 @@ func (s *server) page(w http.ResponseWriter, req *http.Request) {
 		}
 		entries = append(entries, entry)
 	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].isFolder != entries[j].isFolder {
+			return entries[i].isFolder
+		}
+		return entries[i].Name < entries[j].Name
+	})
 	uploadURL := `/upload`
 	if name != `.` {
 		uploadURL += `?` + url.Values{`dir`: {filepath.ToSlash(name)}}.Encode()

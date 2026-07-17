@@ -475,6 +475,50 @@ func TestDirectoryListingUsesFileTypeIconSprite(t *testing.T) {
 	}
 }
 
+func TestDirectoryListingSortsFoldersBeforeFiles(t *testing.T) {
+	srv, dir := testServer(t)
+	for _, name := range []string{`z-folder`, `m-folder`} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{`a-file.txt`, `b-file.txt`} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(`z-folder`, filepath.Join(dir, `n-linked-folder`)); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.page(rec, httptest.NewRequest(http.MethodGet, `/`, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("listing status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	last := -1
+	for _, name := range []string{
+		`m-folder`,
+		`n-linked-folder`,
+		`z-folder`,
+		`a-file.txt`,
+		`b-file.txt`,
+	} {
+		index := strings.Index(body, name)
+		if index < 0 {
+			t.Fatalf("listing omits %q", name)
+		}
+		if index <= last {
+			t.Fatalf("%q is out of order in listing", name)
+		}
+		last = index
+	}
+	if strings.Contains(body, `href="n-linked-folder`) {
+		t.Error("directory symlink is navigable")
+	}
+}
+
 func TestRawFilesUseSafeContentTypes(t *testing.T) {
 	srv, dir := testServer(t)
 	tests := []struct {
