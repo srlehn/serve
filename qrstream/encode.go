@@ -1,13 +1,11 @@
 package qrstream
 
 import (
-	"encoding/binary"
 	"fmt"
-	"hash/crc32"
 	"iter"
 	"math"
 
-	"github.com/klauspost/compress/zstd"
+	"github.com/srlehn/serve/internal/barcodestream"
 )
 
 // Options control symbol geometry and stream pacing. The zero value
@@ -37,9 +35,9 @@ func (o Options) withDefaults() (Options, error) {
 		o.ModulePx = 8
 	}
 	if o.FPS == 0 {
-		// 2 fps: the slowest ladder stage needs ~310 ms on a
+		// 2 fps: the slowest ladder stage needs about 310 ms on a
 		// 1600x1200 still, and a scanner that misses a frame waits a
-		// full loop for it to come around
+		// full loop for it to come around.
 		o.FPS = 2
 	}
 	if o.Redundancy == 0 {
@@ -63,151 +61,51 @@ func (o Options) withDefaults() (Options, error) {
 // Stream is an encoded file: a fixed sequence of QR frames meant to be
 // displayed in a repeating loop.
 type Stream struct {
-	payload []byte // (compressed) container, chunked across frames
-	fileID  uint32
-	flags   byte
-	per     int // payload bytes per frame
-	total   int // frames in one loop iteration
-	opt     Options
-
-	// fountain mode
-	k       int    // source-block count
-	message []byte // uvarint(len(payload)) ‖ payload, padded to k*per
+	core *barcodestream.Stream
+	opt  Options
 }
 
-// Encode prepares name+data as a QR frame sequence. The filename is
-// stored inside the compressed container, so it costs no per-frame
-// overhead and is restored verbatim by the decoder.
-func Encode(name string, data []byte, opt *Options) (*Stream, error) {
-	var o Options
-	if opt != nil {
-		o = *opt
+// Encode prepares name and data as a QR frame sequence. The filename is
+// stored inside the compressed container, so it costs no per-frame overhead
+// and is restored verbatim by the decoder.
+func Encode(name string, data []byte, options *Options) (*Stream, error) {
+	var configured Options
+	if options != nil {
+		configured = *options
 	}
-	var err error
-	o, err = o.withDefaults()
+	configured, err := configured.withDefaults()
 	if err != nil {
 		return nil, err
 	}
 
-	capacity := Capacity(o.Version, o.Level)
-	per := capacity - headerLen
-	if per < 1 {
-		return nil, fmt.Errorf("qrstream: version %d-%v too small for header", o.Version, o.Level)
+	var streamOptions []barcodestream.Option
+	if configured.Fountain {
+		streamOptions = append(streamOptions, barcodestream.WithFountain(configured.Redundancy))
 	}
-
-	// container: uvarint(len(name)) | name | data
-	container := make([]byte, 0, binary.MaxVarintLen64+len(name)+len(data))
-	container = binary.AppendUvarint(container, uint64(len(name)))
-	container = append(container, name...)
-	container = append(container, data...)
-
-	// concurrency 1 keeps the output deterministic; the fileID is the
-	// integrity check, so the zstd frame CRC stays off
-	w, err := zstd.NewWriter(nil,
-		zstd.WithEncoderLevel(zstd.SpeedBestCompression),
-		zstd.WithEncoderCRC(false),
-		zstd.WithEncoderConcurrency(1))
+	core, err := barcodestream.Encode(
+		name,
+		data,
+		Capacity(configured.Version, configured.Level),
+		streamOptions...,
+	)
 	if err != nil {
 		return nil, err
 	}
-	defer w.Close()
-
-	payload, flags := w.EncodeAll(container, nil), byte(0)
-	if len(payload) >= len(container) {
-		payload, flags = container, flagStore
-	}
-
-	if o.Fountain {
-		// the message carries its own length because the padding to
-		// k full blocks is not recoverable from k alone
-		msg := binary.AppendUvarint(nil, uint64(len(payload)))
-		msg = append(msg, payload...)
-		k := (len(msg) + per - 1) / per
-		if k > math.MaxUint16 {
-			return nil, fmt.Errorf("qrstream: %d source blocks exceed format limit %d; use a larger symbol", k, math.MaxUint16)
-		}
-		msg = append(msg, make([]byte, k*per-len(msg))...)
-		// seeds are uint16, so one loop holds at most 65536 distinct frames
-		n := min(int(math.Ceil(float64(k)*o.Redundancy)), math.MaxUint16+1)
-		return &Stream{
-			fileID:  crc32.Checksum(payload, crcTable),
-			flags:   flags | flagFountain,
-			per:     per,
-			total:   n,
-			opt:     o,
-			k:       k,
-			message: msg,
-		}, nil
-	}
-
-	total := (len(payload) + per - 1) / per
-	if total > math.MaxUint16 {
-		return nil, fmt.Errorf("qrstream: %d frames exceed format limit %d; use a larger symbol", total, math.MaxUint16)
-	}
-
-	return &Stream{
-		payload: payload,
-		fileID:  crc32.Checksum(payload, crcTable),
-		flags:   flags,
-		per:     per,
-		total:   total,
-		opt:     o,
-	}, nil
+	return &Stream{core: core, opt: configured}, nil
 }
 
 // NumFrames returns the number of QR symbols in one loop iteration.
-func (s *Stream) NumFrames() int { return s.total }
+func (s *Stream) NumFrames() int {
+	return s.core.NumFrames()
+}
 
 // FileID identifies this stream; the decoder uses it to group frames
 // and to verify the reassembled payload.
-func (s *Stream) FileID() uint32 { return s.fileID }
-
-// FrameBytes yields the raw symbol content of each frame in loop
-// order (header + chunk). Every yielded slice is freshly allocated,
-// so callers may retain them. In fountain mode each frame is the LT
-// code block for seed 0, 1, 2, … (seq carries the seed, total the
-// source-block count).
-func (s *Stream) FrameBytes() iter.Seq[[]byte] {
-	if s.flags&flagFountain != 0 {
-		return s.fountainFrameBytes()
-	}
-	return func(yield func([]byte) bool) {
-		for i := 0; i < s.total; i++ {
-			lo := i * s.per
-			hi := min(lo+s.per, len(s.payload))
-			raw := make([]byte, headerLen+hi-lo)
-			header{
-				flags:  s.flags,
-				fileID: s.fileID,
-				seq:    uint16(i),
-				total:  uint16(s.total),
-			}.marshal(raw)
-			copy(raw[headerLen:], s.payload[lo:hi])
-			if !yield(raw) {
-				return
-			}
-		}
-	}
+func (s *Stream) FileID() uint32 {
+	return s.core.FileID()
 }
 
-func (s *Stream) fountainFrameBytes() iter.Seq[[]byte] {
-	return func(yield func([]byte) bool) {
-		p := newLTPicker(s.k)
-		for seed := 0; seed < s.total; seed++ {
-			raw := make([]byte, headerLen+s.per)
-			header{
-				flags:  s.flags,
-				fileID: s.fileID,
-				seq:    uint16(seed),
-				total:  uint16(s.k),
-			}.marshal(raw)
-			chunk := raw[headerLen:]
-			for _, idx := range p.indices(int64(seed)) {
-				xorBytes(chunk, s.message[idx*s.per:(idx+1)*s.per])
-			}
-			if !yield(raw) {
-				return
-			}
-		}
-	}
+// FrameBytes yields the raw symbol content of each frame in loop order.
+func (s *Stream) FrameBytes() iter.Seq[[]byte] {
+	return s.core.FrameBytes()
 }

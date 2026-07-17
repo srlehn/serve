@@ -110,10 +110,10 @@ Block composition for a seed:
 1. The chunk is the XOR of the selected source blocks.
 
 The uniform-value derivations (Float64, Intn) follow Go's
-math/rand(v1) semantics on the raw MT19937 output; fountain.go is the
-reference implementation, bit-compatible with google/gofountain's
-LubyCodec so the exact bit-level derivation is pinned by two
-independent codebases.
+math/rand(v1) semantics on the raw MT19937 output;
+`internal/barcodestream/fountain.go` is the reference implementation,
+bit-compatible with google/gofountain's LubyCodec so the exact
+bit-level derivation is pinned by two independent codebases.
 
 The encoder emits one loop of ceil(K * redundancy) frames with seeds
 0,1,2,… (redundancy 2 by default, the factor txqr validated on real

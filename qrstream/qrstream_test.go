@@ -63,13 +63,6 @@ func TestRoundTripBinary(t *testing.T) {
 func TestRoundTripIncompressible(t *testing.T) {
 	data := make([]byte, 3000)
 	rand.New(rand.NewSource(1)).Read(data)
-	st, err := Encode("noise.bin", data, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.flags&flagStore == 0 {
-		t.Error("expected store flag for incompressible data")
-	}
 	roundTripBytes(t, "noise.bin", data, nil)
 }
 
@@ -180,89 +173,6 @@ func TestRejectsForeignAndCorrupt(t *testing.T) {
 	raw[2] = 0xf0 // bogus format version
 	if _, err := c.AddBytes(raw); err == nil {
 		t.Error("accepted bogus format version")
-	}
-}
-
-func TestCollectorRejectsStreamOverCollectionLimit(t *testing.T) {
-	c := newCollector(8, 1024)
-	raw := make([]byte, headerLen+5)
-	header{fileID: 1, seq: 0, total: 2}.marshal(raw)
-	if _, err := c.AddBytes(raw); err == nil {
-		t.Fatal("collector accepted frame geometry above its collection limit")
-	}
-}
-
-func TestCollectorCollectionLimitIsGlobalAndForgetReleasesIt(t *testing.T) {
-	c := newCollector(10, 1024)
-	frame := func(id uint32) []byte {
-		raw := make([]byte, headerLen+6)
-		header{fileID: id, seq: 0, total: 1}.marshal(raw)
-		return raw
-	}
-	if _, err := c.AddBytes(frame(1)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.AddBytes(frame(2)); err == nil {
-		t.Fatal("collector exceeded its global collection limit")
-	}
-	if _, ok := c.streams[2]; ok {
-		t.Fatal("collector retained a stream whose first frame was rejected")
-	}
-	c.Forget(1)
-	if _, err := c.AddBytes(frame(2)); err != nil {
-		t.Fatalf("collector did not release forgotten stream memory: %v", err)
-	}
-}
-
-func TestCollectorBoundsActiveStreams(t *testing.T) {
-	c := newCollector(1024, 1024)
-	c.maxStreams = 1
-	frame := func(id uint32) []byte {
-		raw := make([]byte, headerLen+1)
-		header{fileID: id, seq: 0, total: 2}.marshal(raw)
-		return raw
-	}
-	if _, err := c.AddBytes(frame(1)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.AddBytes(frame(2)); err == nil {
-		t.Fatal("collector exceeded its active stream limit")
-	}
-	c.Forget(1)
-	if _, err := c.AddBytes(frame(2)); err != nil {
-		t.Fatalf("collector did not release a forgotten stream slot: %v", err)
-	}
-}
-
-func TestCollectorBoundsFrameCount(t *testing.T) {
-	c := newCollector(1024, 1024)
-	c.maxFrames = 1
-	frame := func(seq uint16) []byte {
-		raw := make([]byte, headerLen+1)
-		header{fileID: 1, seq: seq, total: 2}.marshal(raw)
-		return raw
-	}
-	if _, err := c.AddBytes(frame(0)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.AddBytes(frame(1)); err == nil {
-		t.Fatal("collector exceeded its frame count limit")
-	}
-}
-
-func TestCollectorBoundsDecompressedContainer(t *testing.T) {
-	st, err := Encode("large.txt", bytes.Repeat([]byte(`x`), 4096), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := newCollector(defaultMaxCollectedBytes, 1024)
-	for raw := range st.FrameBytes() {
-		if _, err := c.AddBytes(raw); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, _, err := c.File(); err == nil {
-		t.Fatal("collector decoded a container above its output limit")
 	}
 }
 

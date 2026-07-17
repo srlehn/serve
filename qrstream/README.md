@@ -78,8 +78,9 @@ All dependencies are pure Go:
 ## Layout
 
 ```text
-*.go            the library (package qrstream)
-cmd/qrstream/   CLI: encode | decode
+*.go                         QR capacity, rendering, and image detection
+../internal/barcodestream/   container, framing, fountain code, collection
+cmd/qrstream/                CLI: encode | decode
 ```
 
 ## Tests

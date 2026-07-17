@@ -1,4 +1,4 @@
-package qrstream
+package barcodestream
 
 // Luby Transform core for the fountain mode (FORMAT.md, flags bit 0).
 //
@@ -8,11 +8,11 @@ package qrstream
 // informed by the public protocol design in github.com/divan/txqr.
 // No txqr source code is included. The gofountain code is copied
 // rather than imported because its repository is archived. Reduced
-// for qrstream:
+// for this stream format:
 // every block has the same fixed length (the symbol chunk size), so
 // the variable-length padding and RFC 5053 partitioning bookkeeping
 // of the original are gone. The applicable Apache license is in
-// LICENSE-APACHE.
+// qrstream/LICENSE-APACHE.
 
 import (
 	"math"
