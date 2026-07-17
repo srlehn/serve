@@ -36,20 +36,38 @@ func testServer(t *testing.T) (*server, string) {
 
 func uploadRequest(t *testing.T, target, name string, data []byte) *http.Request {
 	t.Helper()
+	return uploadFilesRequest(t, target, uploadFile{name: name, data: data})
+}
+
+type uploadFile struct {
+	name string
+	data []byte
+}
+
+func uploadBody(t *testing.T, files ...uploadFile) ([]byte, string) {
+	t.Helper()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
-	part, err := mw.CreateFormFile(`file`, name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := part.Write(data); err != nil {
-		t.Fatal(err)
+	for _, file := range files {
+		part, err := mw.CreateFormFile(`file`, file.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(file.data); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := mw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, target, &body)
-	req.Header.Set(`Content-Type`, mw.FormDataContentType())
+	return body.Bytes(), mw.FormDataContentType()
+}
+
+func uploadFilesRequest(t *testing.T, target string, files ...uploadFile) *http.Request {
+	t.Helper()
+	body, contentType := uploadBody(t, files...)
+	req := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body))
+	req.Header.Set(`Content-Type`, contentType)
 	return req
 }
 
@@ -141,6 +159,71 @@ func TestBadUploadDoesNotBreakLaterRequests(t *testing.T) {
 	}
 }
 
+func TestInterruptedUploadIsARequestErrorAndAtomic(t *testing.T) {
+	var logs bytes.Buffer
+	srv, dir := testServerWithLogging(t, log.New(&logs, ``, 0), false)
+	target := filepath.Join(dir, `photo.png`)
+	if err := os.WriteFile(target, []byte(`original`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	data := bytes.Repeat([]byte(`x`), 4096)
+	body, contentType := uploadBody(t, uploadFile{name: `photo.png`, data: data})
+	body = body[:len(body)-len(data)/2]
+	req := httptest.NewRequest(http.MethodPost, `/upload`, bytes.NewReader(body))
+	req.Header.Set(`Content-Type`, contentType)
+	rec := httptest.NewRecorder()
+	srv.upload(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("interrupted upload status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != `original` {
+		t.Fatalf("destination after interrupted upload = %q, %v", got, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), `.serve-upload-`) {
+			t.Fatalf("interrupted upload left temporary file %q", entry.Name())
+		}
+	}
+	if got := logs.String(); !strings.Contains(got, `status=400 error="unexpected EOF"`) || strings.Contains(got, `status=500`) {
+		t.Fatalf("interrupted upload log = %q", got)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.upload(rec, uploadRequest(t, `/upload`, `photo.png`, []byte(`complete`)))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("following upload status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != `complete` {
+		t.Fatalf("destination after complete upload = %q, %v", got, err)
+	}
+	if got := logs.String(); !strings.Contains(got, `upload path="photo.png" bytes=8`) {
+		t.Fatalf("successful upload log = %q", got)
+	}
+}
+
+func TestUploadStoresMultipleFiles(t *testing.T) {
+	srv, dir := testServer(t)
+	rec := httptest.NewRecorder()
+	srv.upload(rec, uploadFilesRequest(t, `/upload`,
+		uploadFile{name: `one.txt`, data: []byte(`one`)},
+		uploadFile{name: `two.txt`, data: []byte(`second`)},
+	))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("multi-file upload status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	for name, want := range map[string]string{`one.txt`: `one`, `two.txt`: `second`} {
+		got, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || string(got) != want {
+			t.Errorf("uploaded %s = %q, %v; want %q", name, got, err, want)
+		}
+	}
+}
+
 func TestDirectoryListingEscapesFileURLs(t *testing.T) {
 	srv, dir := testServer(t)
 	name := `what?# %.txt`
@@ -152,6 +235,31 @@ func TestDirectoryListingEscapesFileURLs(t *testing.T) {
 	want := `href="` + url.PathEscape(name) + `"`
 	if !strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("listing does not contain %q: %q", want, rec.Body.String())
+	}
+}
+
+func TestUploadPageUsesControlledSubmission(t *testing.T) {
+	srv, _ := testServer(t)
+	rec := httptest.NewRecorder()
+	srv.page(rec, httptest.NewRequest(http.MethodGet, `/`, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("page status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="uploadForm"`,
+		`id="uploadStatus"`,
+		`uploadForm.addEventListener('submit'`,
+		`request.upload.addEventListener('progress'`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page does not contain %q", want)
+		}
+	}
+	for _, unwanted := range []string{`target="dummyFrame"`, `<iframe`} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("page still contains %q", unwanted)
+		}
 	}
 }
 

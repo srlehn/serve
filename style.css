@@ -93,6 +93,20 @@ body>button svg {
     height: 100%;
 }
 
+#uploadForm {
+    padding: 0 12px;
+}
+
+#uploadForm>div {
+    margin-bottom: 10px;
+}
+
+#uploadStatus {
+    min-height: 1.25em;
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
 dialog {
     border: 0;
     border-radius: 4px;

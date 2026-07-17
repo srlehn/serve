@@ -696,30 +696,55 @@ func (s *server) upload(w http.ResponseWriter, req *http.Request) {
 			p.Close()
 			continue
 		}
-		err = storeUpload(s.root, dir, name, p)
+		written, err := storeUpload(s.root, dir, name, p)
 		p.Close()
 		if err != nil {
 			status := http.StatusInternalServerError
 			message := `could not store upload`
-			if errors.Is(err, fs.ErrInvalid) {
+			var inputErr *uploadInputError
+			switch {
+			case errors.Is(err, fs.ErrInvalid):
 				status = http.StatusBadRequest
 				message = `invalid upload filename`
+			case errors.As(err, &inputErr):
+				status = http.StatusBadRequest
+				message = `upload was interrupted`
 			}
 			s.requestError(w, req, status, message, err)
 			return
 		}
+		s.logger.Printf("upload path=%q bytes=%d", filepath.ToSlash(filepath.Join(dir, name)), written)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func storeUpload(root *os.Root, dir, name string, src *multipart.Part) error {
+type uploadInputError struct {
+	err error
+}
+
+func (e *uploadInputError) Error() string { return e.err.Error() }
+func (e *uploadInputError) Unwrap() error { return e.err }
+
+type uploadPartReader struct {
+	part *multipart.Part
+}
+
+func (r uploadPartReader) Read(p []byte) (int, error) {
+	n, err := r.part.Read(p)
+	if err != nil && err != io.EOF {
+		err = &uploadInputError{err: err}
+	}
+	return n, err
+}
+
+func storeUpload(root *os.Root, dir, name string, src *multipart.Part) (int64, error) {
 	if name == `.` || !filepath.IsLocal(name) {
-		return fs.ErrInvalid
+		return 0, fs.ErrInvalid
 	}
 	target := filepath.Join(dir, name)
 	temp, tempName, err := createUploadTemp(root, dir)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	keep := false
 	defer func() {
@@ -728,22 +753,23 @@ func storeUpload(root *os.Root, dir, name string, src *multipart.Part) error {
 			root.Remove(tempName)
 		}
 	}()
-	if _, err := io.Copy(temp, src); err != nil {
-		return err
+	written, err := io.Copy(temp, uploadPartReader{part: src})
+	if err != nil {
+		return 0, err
 	}
 	if err := temp.Chmod(0o644); err != nil {
-		return err
+		return 0, err
 	}
 	if err := temp.Close(); err != nil {
-		return err
+		return 0, err
 	}
 	// Replacement is intentional. The temporary file keeps an aborted
 	// upload from leaving a partially written destination.
 	if err := root.Rename(tempName, target); err != nil {
-		return err
+		return 0, err
 	}
 	keep = true
-	return nil
+	return written, nil
 }
 
 func createUploadTemp(root *os.Root, dir string) (*os.File, string, error) {

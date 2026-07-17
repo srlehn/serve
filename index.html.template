@@ -12,16 +12,16 @@
         {{end}}
     </div>
     <div class="split right">
-        <form method="post" action="{{.UploadURL}}" target="dummyFrame" enctype="multipart/form-data">
+        <form id="uploadForm" method="post" action="{{.UploadURL}}" enctype="multipart/form-data">
             <div>
                 <label for="file">Choose file to upload</label>
                 <input type="file" id="file" name="file" multiple>
             </div>
             <div>
-                <button>Submit</button>
+                <button type="submit">Upload</button>
             </div>
+            <p id="uploadStatus" role="status" aria-live="polite"></p>
         </form>
-        <iframe name="dummyFrame" id="dummyFrame" style="display: none;"></iframe>
         {{if .ShowQR}}<img src="{{.QRURL}}" alt="this page as QR code" title="scan to open this page on another device"
             style="position: fixed; bottom: 8px; right: 8px; width: 128px; height: 128px;">{{end}}
     </div>
@@ -63,6 +63,63 @@
     {{else}}
     function qlog() {}
     {{end}}
+
+    const uploadForm = document.querySelector('#uploadForm');
+    const uploadInput = uploadForm.querySelector('input[type="file"]');
+    const uploadButton = uploadForm.querySelector('button[type="submit"]');
+    const uploadStatus = uploadForm.querySelector('#uploadStatus');
+    let uploadRequest = null;
+    function finishUpload(request) {
+        if (uploadRequest !== request) return;
+        uploadRequest = null;
+        uploadInput.disabled = false;
+        uploadButton.disabled = false;
+        uploadForm.removeAttribute('aria-busy');
+    }
+    uploadForm.addEventListener('submit', e => {
+        e.preventDefault();
+        if (uploadRequest) return;
+        const fileCount = uploadInput.files.length;
+        if (!fileCount) {
+            uploadStatus.textContent = 'choose at least one file';
+            return;
+        }
+
+        const request = new XMLHttpRequest();
+        const data = new FormData(uploadForm);
+        uploadRequest = request;
+        uploadInput.disabled = true;
+        uploadButton.disabled = true;
+        uploadForm.setAttribute('aria-busy', 'true');
+        uploadStatus.textContent = 'uploading';
+        request.upload.addEventListener('progress', event => {
+            if (!event.lengthComputable) return;
+            const percent = Math.min(100, Math.round(event.loaded * 100 / event.total));
+            uploadStatus.textContent = 'uploading ' + percent + '%';
+        });
+        request.addEventListener('load', () => {
+            if (request.status >= 200 && request.status < 300) {
+                uploadStatus.textContent = fileCount === 1
+                    ? 'upload complete'
+                    : fileCount + ' uploads complete';
+                uploadInput.value = '';
+            } else {
+                const detail = request.responseText.trim();
+                uploadStatus.textContent = detail || 'upload failed (' + request.status + ')';
+            }
+            finishUpload(request);
+        });
+        request.addEventListener('error', () => {
+            uploadStatus.textContent = 'upload failed: network error';
+            finishUpload(request);
+        });
+        request.addEventListener('abort', () => {
+            uploadStatus.textContent = 'upload cancelled';
+            finishUpload(request);
+        });
+        request.open('POST', uploadForm.action);
+        request.send(data);
+    });
 
     const dialog = document.querySelector('dialog:has(img)');
     const stream = dialog.querySelector('img');
