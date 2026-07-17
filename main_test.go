@@ -446,6 +446,13 @@ func TestDirectoryListingUsesFileTypeIconSprite(t *testing.T) {
 	if !strings.Contains(body, `class="icon-sprite" aria-hidden="true"`) {
 		t.Error("icon sprite is not hidden from assistive technology")
 	}
+	if !strings.Contains(body, `class="file-type-icon" viewBox="0 0 16 16" width="16" height="16"`) {
+		t.Error("file type icons do not have intrinsic dimensions")
+	}
+	if !strings.Contains(body, `class="qr-transfer"`) ||
+		!strings.Contains(body, `<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">`) {
+		t.Error("QR transfer icons do not have intrinsic dimensions")
+	}
 }
 
 func TestRawFilesUseSafeContentTypes(t *testing.T) {
