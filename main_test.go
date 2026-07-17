@@ -238,6 +238,69 @@ func TestDirectoryListingEscapesFileURLs(t *testing.T) {
 	}
 }
 
+func TestListingFileIconClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		want listingIcon
+	}{
+		{`README`, listingIconText},
+		{`go.mod`, listingIconText},
+		{`notes.TXT`, listingIconText},
+		{`photo.jpeg`, listingIconImage},
+		{`clip.mp4`, listingIconVideo},
+		{`recording.flac`, listingIconAudio},
+		{`manual.pdf`, listingIconDocument},
+		{`drawing.svg`, listingIconImage},
+		{`data.bin`, listingIconFile},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := listingFileIcon(tt.name); got != tt.want {
+				t.Fatalf("listingFileIcon(%q) = %q, want %q", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDirectoryListingUsesFileTypeIconSprite(t *testing.T) {
+	srv, dir := testServer(t)
+	if err := os.Mkdir(filepath.Join(dir, `subdir`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := []string{`notes.txt`, `photo.png`, `clip.mp4`, `song.mp3`, `manual.pdf`, `data.bin`}
+	for _, name := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	srv.page(rec, httptest.NewRequest(http.MethodGet, `/`, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("listing status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, icon := range []listingIcon{
+		listingIconFolder,
+		listingIconText,
+		listingIconImage,
+		listingIconVideo,
+		listingIconAudio,
+		listingIconDocument,
+		listingIconFile,
+	} {
+		if want := `href="#file-icon-` + string(icon) + `"`; !strings.Contains(body, want) {
+			t.Errorf("listing does not use %q", want)
+		}
+	}
+	if got, want := strings.Count(body, `class="file-type-icon"`), len(files)+1; got != want {
+		t.Errorf("file icon count = %d, want %d", got, want)
+	}
+	if !strings.Contains(body, `class="icon-sprite" aria-hidden="true"`) {
+		t.Error("icon sprite is not hidden from assistive technology")
+	}
+}
+
 func TestRawFilesUseSafeContentTypes(t *testing.T) {
 	srv, dir := testServer(t)
 	tests := []struct {

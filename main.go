@@ -497,11 +497,24 @@ func (s *server) qr(w http.ResponseWriter, req *http.Request) {
 	st.ServeHTTP(w, req)
 }
 
+type listingIcon string
+
+const (
+	listingIconFile     listingIcon = `file`
+	listingIconFolder   listingIcon = `folder`
+	listingIconText     listingIcon = `text`
+	listingIconImage    listingIcon = `image`
+	listingIconVideo    listingIcon = `video`
+	listingIconAudio    listingIcon = `audio`
+	listingIconDocument listingIcon = `document`
+)
+
 type pageEntry struct {
 	Name   string
 	Href   string
 	QRHref string
 	Note   string
+	Icon   listingIcon
 }
 
 type pageData struct {
@@ -549,17 +562,20 @@ func (s *server) page(w http.ResponseWriter, req *http.Request) {
 	sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
 	entries := make([]pageEntry, 0, len(files))
 	for _, file := range files {
-		entry := pageEntry{Name: file.Name()}
+		entry := pageEntry{Name: file.Name(), Icon: listingFileIcon(file.Name())}
 		entryName := filepath.Join(name, file.Name())
 		switch {
 		case file.IsDir():
+			entry.Icon = listingIconFolder
 			entry.Href = url.PathEscape(file.Name()) + `/`
 		case file.Mode()&os.ModeSymlink != 0:
 			target, err := s.root.Stat(entryName)
 			switch {
 			case err != nil:
+				entry.Icon = listingIconFile
 				entry.Note = `unavailable symlink`
 			case target.IsDir():
+				entry.Icon = listingIconFolder
 				entry.Note = `symlink directory not served`
 			case target.Mode().IsRegular():
 				entry.Href = url.PathEscape(file.Name())
@@ -600,6 +616,46 @@ func (s *server) page(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set(`Content-Type`, `text/html; charset=utf-8`)
 	if req.Method != http.MethodHead {
 		body.WriteTo(w)
+	}
+}
+
+func listingFileIcon(name string) listingIcon {
+	base := strings.ToLower(filepath.Base(name))
+	switch base {
+	case `makefile`, `dockerfile`, `readme`, `license`, `.gitignore`, `.gitattributes`, `.editorconfig`:
+		return listingIconText
+	}
+
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case `.pdf`, `.doc`, `.docx`, `.odt`, `.ods`, `.odp`, `.rtf`, `.epub`:
+		return listingIconDocument
+	case `.txt`, `.md`, `.markdown`, `.rst`, `.go`, `.mod`, `.sum`, `.c`, `.h`, `.cc`, `.cpp`, `.hpp`, `.rs`, `.py`, `.rb`, `.sh`, `.js`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.jsx`, `.css`, `.scss`, `.html`, `.htm`, `.xml`, `.json`, `.yaml`, `.yml`, `.toml`, `.ini`, `.conf`, `.log`, `.csv`, `.tsv`, `.sql`:
+		return listingIconText
+	case `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.avif`, `.bmp`, `.tif`, `.tiff`, `.heic`:
+		return listingIconImage
+	case `.mp4`, `.m4v`, `.mov`, `.mkv`, `.webm`, `.avi`, `.mpeg`, `.mpg`:
+		return listingIconVideo
+	case `.mp3`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.oga`, `.opus`, `.wav`:
+		return listingIconAudio
+	}
+
+	contentType := mime.TypeByExtension(ext)
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return listingIconFile
+	}
+	switch {
+	case strings.HasPrefix(mediaType, `image/`):
+		return listingIconImage
+	case strings.HasPrefix(mediaType, `video/`):
+		return listingIconVideo
+	case strings.HasPrefix(mediaType, `audio/`):
+		return listingIconAudio
+	case rawTextMediaType(mediaType):
+		return listingIconText
+	default:
+		return listingIconFile
 	}
 }
 

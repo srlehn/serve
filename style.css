@@ -63,6 +63,28 @@ a {
     color: var(--link);
 }
 
+.icon-sprite {
+    position: absolute;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+}
+
+.file-name {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    vertical-align: middle;
+}
+
+.file-type-icon {
+    flex: 0 0 auto;
+    width: 1em;
+    height: 1em;
+    margin-right: 0.25em;
+}
+
 a[href^="/qr/"] {
     color: inherit;
 }

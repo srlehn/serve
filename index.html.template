@@ -6,9 +6,48 @@
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+    <svg class="icon-sprite" aria-hidden="true" focusable="false">
+        <symbol id="file-icon-file" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+            stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3.5 1.5h6l3 3v10h-9z"/>
+            <path d="M9.5 1.5v3h3"/>
+        </symbol>
+        <symbol id="file-icon-folder" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+            stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M1.5 3.5h5l1.5 2h6.5v8h-13z"/>
+            <path d="M1.5 5.5h13"/>
+        </symbol>
+        <symbol id="file-icon-text" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+            stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3.5 1.5h6l3 3v10h-9z"/>
+            <path d="M9.5 1.5v3h3M5.5 7h5M8 7v4.5M6.5 11.5h3"/>
+        </symbol>
+        <symbol id="file-icon-image" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+            stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3.5 1.5h6l3 3v10h-9z"/>
+            <path d="M9.5 1.5v3h3M5 12l2.25-2.5 1.5 1.5 1.25-1.25 1.25 2.25"/>
+            <circle cx="6.25" cy="6.75" r=".75" fill="currentColor" stroke="none"/>
+        </symbol>
+        <symbol id="file-icon-video" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+            stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="1.5" y="3.5" width="13" height="9" rx="1"/>
+            <path d="M6.5 6l4 2-4 2z" fill="currentColor" stroke="none"/>
+        </symbol>
+        <symbol id="file-icon-audio" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+            stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6.5 12V4.5l6-1.5v7"/>
+            <ellipse cx="4.5" cy="12" rx="2" ry="1.5"/>
+            <ellipse cx="10.5" cy="10" rx="2" ry="1.5"/>
+        </symbol>
+        <symbol id="file-icon-document" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+            stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3.5 1.5h6l3 3v10h-9z"/>
+            <path d="M9.5 1.5v3h3M5.5 7h5M5.5 9.5h5M5.5 12h3.5"/>
+        </symbol>
+    </svg>
     <div class="split left">
         <b>Files:</b><br>
-        {{range .Files}}{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}{{if .QRHref}} <a href="{{.QRHref}}" title="transfer via QR codes"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M0 0h7v7H0zm1 1v5h5V1zm1 1h3v3H2zM9 0h7v7H9zm1 1v5h5V1zm1 1h3v3h-3zM0 9h7v7H0zm1 1v5h5v-5zm1 1h3v3H2zM9 9h2v2H9zm4 0h3v3h-3zm-4 4h3v3H9zm5 1h2v2h-2z"/></svg></a>{{end}}{{if .Note}} <small>({{.Note}})</small>{{end}}<br>
+        {{range .Files}}<span class="file-name"><svg class="file-type-icon" aria-hidden="true" focusable="false"><use href="#file-icon-{{.Icon}}"/></svg>{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</span>{{if .QRHref}} <a href="{{.QRHref}}" title="transfer via QR codes"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M0 0h7v7H0zm1 1v5h5V1zm1 1h3v3H2zM9 0h7v7H9zm1 1v5h5V1zm1 1h3v3h-3zM0 9h7v7H0zm1 1v5h5v-5zm1 1h3v3H2zM9 9h2v2H9zm4 0h3v3h-3zm-4 4h3v3H9zm5 1h2v2h-2z"/></svg></a>{{end}}{{if .Note}} <small>({{.Note}})</small>{{end}}<br>
         {{end}}
     </div>
     <div class="split right">
