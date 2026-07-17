@@ -14,7 +14,7 @@ import (
 	"testing"
 )
 
-func testServerWithLogging(t *testing.T, logger *log.Logger, browserLogging bool) (*server, string) {
+func testServerWithOptions(t *testing.T, logger *log.Logger, browserLogging bool, uploadLimit int64) (*server, string) {
 	t.Helper()
 	dir := t.TempDir()
 	root, err := os.OpenRoot(dir)
@@ -22,11 +22,21 @@ func testServerWithLogging(t *testing.T, logger *log.Logger, browserLogging bool
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { root.Close() })
-	srv, err := newServer(root, logger, browserLogging)
+	srv, err := newServer(root, logger, browserLogging, uploadLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return srv, dir
+}
+
+func testServerWithLogging(t *testing.T, logger *log.Logger, browserLogging bool) (*server, string) {
+	t.Helper()
+	return testServerWithOptions(t, logger, browserLogging, 0)
+}
+
+func testServerWithUploadLimit(t *testing.T, uploadLimit int64) (*server, string) {
+	t.Helper()
+	return testServerWithOptions(t, log.New(io.Discard, ``, 0), false, uploadLimit)
 }
 
 func testServer(t *testing.T) (*server, string) {
@@ -203,6 +213,143 @@ func TestInterruptedUploadIsARequestErrorAndAtomic(t *testing.T) {
 	}
 	if got := logs.String(); !strings.Contains(got, `upload path="photo.png" bytes=8`) {
 		t.Fatalf("successful upload log = %q", got)
+	}
+}
+
+func TestUploadLimitZeroIsUnlimited(t *testing.T) {
+	srv, dir := testServerWithUploadLimit(t, 0)
+	data := bytes.Repeat([]byte(`x`), 1<<20)
+	rec := httptest.NewRecorder()
+	srv.upload(rec, uploadRequest(t, `/upload`, `large.dat`, data))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("unlimited upload status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	if info, err := os.Stat(filepath.Join(dir, `large.dat`)); err != nil || info.Size() != int64(len(data)) {
+		t.Fatalf("unlimited upload size = %v, %v; want %d", info, err, len(data))
+	}
+}
+
+func TestParseByteSize(t *testing.T) {
+	tests := []struct {
+		value string
+		want  int64
+	}{
+		{`0`, 0},
+		{`0 MB`, 0},
+		{`1B`, 1},
+		{`1KB`, 1000},
+		{`500MB`, 500_000_000},
+		{`1.5GB`, 1_500_000_000},
+		{`1KiB`, 1 << 10},
+		{`512MiB`, 512 << 20},
+		{`2GiB`, 2 << 30},
+		{` 2 gib `, 2 << 30},
+		{`1TiB`, 1 << 40},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			got, err := parseByteSize(tt.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseByteSize(%q) = %d, want %d", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseByteSizeRejectsInvalidValues(t *testing.T) {
+	for _, value := range []string{``, `1`, `-1GB`, `MB`, `1XB`, `1.1B`, `100000000000000000000GiB`} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := parseByteSize(value); err == nil {
+				t.Fatalf("parseByteSize(%q) succeeded", value)
+			}
+		})
+	}
+}
+
+func TestUploadLimitAcceptsExactRequestSize(t *testing.T) {
+	body, contentType := uploadBody(t, uploadFile{name: `exact.txt`, data: []byte(`content`)})
+	srv, dir := testServerWithUploadLimit(t, int64(len(body)))
+	req := httptest.NewRequest(http.MethodPost, `/upload`, bytes.NewReader(body))
+	req.Header.Set(`Content-Type`, contentType)
+	rec := httptest.NewRecorder()
+	srv.upload(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("exact-limit upload status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, `exact.txt`)); err != nil || string(got) != `content` {
+		t.Fatalf("exact-limit upload = %q, %v", got, err)
+	}
+}
+
+func TestUploadLimitIncludesMultipartOverhead(t *testing.T) {
+	data := bytes.Repeat([]byte(`x`), 128)
+	body, contentType := uploadBody(t, uploadFile{name: `overhead.dat`, data: data})
+	srv, dir := testServerWithUploadLimit(t, int64(len(data)))
+	req := httptest.NewRequest(http.MethodPost, `/upload`, bytes.NewReader(body))
+	req.Header.Set(`Content-Type`, contentType)
+	rec := httptest.NewRecorder()
+	srv.upload(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("multipart-overhead status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, `overhead.dat`)); !os.IsNotExist(err) {
+		t.Fatalf("multipart-overhead upload created destination: %v", err)
+	}
+}
+
+func TestStreamingUploadLimitIsAtomicAndServerRecovers(t *testing.T) {
+	data := bytes.Repeat([]byte(`x`), 4096)
+	body, contentType := uploadBody(t, uploadFile{name: `photo.png`, data: data})
+	limit := int64(len(body) - len(data)/2)
+	srv, dir := testServerWithUploadLimit(t, limit)
+	target := filepath.Join(dir, `photo.png`)
+	if err := os.WriteFile(target, []byte(`original`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, `/upload`, bytes.NewReader(body))
+	req.ContentLength = -1
+	req.Header.Set(`Content-Type`, contentType)
+	rec := httptest.NewRecorder()
+	srv.upload(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("streaming oversized upload status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != `original` {
+		t.Fatalf("destination after oversized upload = %q, %v", got, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), `.serve-upload-`) {
+			t.Fatalf("oversized upload left temporary file %q", entry.Name())
+		}
+	}
+
+	rec = httptest.NewRecorder()
+	srv.upload(rec, uploadRequest(t, `/upload`, `photo.png`, []byte(`complete`)))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("following upload status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != `complete` {
+		t.Fatalf("destination after following upload = %q, %v", got, err)
+	}
+}
+
+func TestNewServerRejectsNegativeUploadLimit(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if _, err := newServer(root, log.New(io.Discard, ``, 0), false, -1); err == nil {
+		t.Fatal("newServer accepted a negative upload limit")
 	}
 }
 

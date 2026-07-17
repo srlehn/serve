@@ -43,6 +43,72 @@ const (
 	maxClientLog  = 16 << 10
 )
 
+type byteSizeValue int64
+
+func (v *byteSizeValue) String() string {
+	if v == nil || *v == 0 {
+		return `0`
+	}
+	return fmt.Sprintf(`%dB`, *v)
+}
+
+func (v *byteSizeValue) Set(value string) error {
+	size, err := parseByteSize(value)
+	if err != nil {
+		return err
+	}
+	*v = byteSizeValue(size)
+	return nil
+}
+
+func parseByteSize(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == `` {
+		return 0, errors.New(`size is empty`)
+	}
+
+	i := 0
+	for i < len(value) && (value[i] >= '0' && value[i] <= '9' || value[i] == '.') {
+		i++
+	}
+	numberText := value[:i]
+	unit := strings.ToLower(strings.TrimSpace(value[i:]))
+	number, ok := new(big.Rat).SetString(numberText)
+	if !ok || number.Sign() < 0 {
+		return 0, fmt.Errorf("invalid size %q", value)
+	}
+	if unit == `` {
+		if number.Sign() == 0 {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("size %q needs a unit such as MB, GB, MiB, or GiB", value)
+	}
+	factors := map[string]int64{
+		`b`:   1,
+		`kb`:  1000,
+		`mb`:  1000 * 1000,
+		`gb`:  1000 * 1000 * 1000,
+		`tb`:  1000 * 1000 * 1000 * 1000,
+		`kib`: 1 << 10,
+		`mib`: 1 << 20,
+		`gib`: 1 << 30,
+		`tib`: 1 << 40,
+	}
+	factor, ok := factors[unit]
+	if !ok {
+		return 0, fmt.Errorf("unknown size unit %q", value[i:])
+	}
+	number.Mul(number, new(big.Rat).SetInt64(factor))
+	if !number.IsInt() {
+		return 0, fmt.Errorf("size %q is not a whole number of bytes", value)
+	}
+	bytes := number.Num()
+	if !bytes.IsInt64() {
+		return 0, fmt.Errorf("size %q is too large", value)
+	}
+	return bytes.Int64(), nil
+}
+
 //go:embed index.html.template
 var pageTemplate string
 
@@ -67,14 +133,24 @@ type server struct {
 	template       *template.Template
 	logger         *log.Logger
 	browserLogging bool
+	uploadLimit    int64
 }
 
-func newServer(root *os.Root, logger *log.Logger, browserLogging bool) (*server, error) {
+func newServer(root *os.Root, logger *log.Logger, browserLogging bool, uploadLimit int64) (*server, error) {
+	if uploadLimit < 0 {
+		return nil, errors.New(`upload limit must not be negative`)
+	}
 	tp, err := template.New(`index`).Parse(pageTemplate)
 	if err != nil {
 		return nil, err
 	}
-	return &server{root: root, template: tp, logger: logger, browserLogging: browserLogging}, nil
+	return &server{
+		root:           root,
+		template:       tp,
+		logger:         logger,
+		browserLogging: browserLogging,
+		uploadLimit:    uploadLimit,
+	}, nil
 }
 
 func (s *server) mux() *http.ServeMux {
@@ -96,6 +172,8 @@ func (s *server) mux() *http.ServeMux {
 
 func main() {
 	browserLogging := flag.Bool(`browser-log`, false, `log browser scanner diagnostics`)
+	var uploadLimit byteSizeValue
+	flag.Var(&uploadLimit, `upload-limit`, `maximum multipart upload request size, e.g. 500MB or 2GiB (0 is unlimited)`)
 	flag.Parse()
 
 	root, err := os.OpenRoot(`.`)
@@ -103,7 +181,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer root.Close()
-	srv, err := newServer(root, log.Default(), *browserLogging)
+	srv, err := newServer(root, log.Default(), *browserLogging, int64(uploadLimit))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -752,6 +830,14 @@ func (s *server) upload(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 		return
 	}
+	if s.uploadLimit > 0 {
+		if req.ContentLength > s.uploadLimit {
+			err := fmt.Errorf("request body is %d bytes; upload limit is %d", req.ContentLength, s.uploadLimit)
+			s.requestError(w, req, http.StatusRequestEntityTooLarge, `upload exceeds configured limit`, err)
+			return
+		}
+		req.Body = http.MaxBytesReader(w, req.Body, s.uploadLimit)
+	}
 	dir, err := localName(req.URL.Query().Get(`dir`))
 	if err != nil {
 		s.requestError(w, req, http.StatusBadRequest, `invalid upload directory`, err)
@@ -778,7 +864,14 @@ func (s *server) upload(w http.ResponseWriter, req *http.Request) {
 			break
 		}
 		if err != nil {
-			s.requestError(w, req, http.StatusBadRequest, `could not read multipart upload`, err)
+			status := http.StatusBadRequest
+			message := `could not read multipart upload`
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				status = http.StatusRequestEntityTooLarge
+				message = `upload exceeds configured limit`
+			}
+			s.requestError(w, req, status, message, err)
 			return
 		}
 		name := p.FileName()
@@ -791,8 +884,12 @@ func (s *server) upload(w http.ResponseWriter, req *http.Request) {
 		if err != nil {
 			status := http.StatusInternalServerError
 			message := `could not store upload`
+			var maxErr *http.MaxBytesError
 			var inputErr *uploadInputError
 			switch {
+			case errors.As(err, &maxErr):
+				status = http.StatusRequestEntityTooLarge
+				message = `upload exceeds configured limit`
 			case errors.Is(err, fs.ErrInvalid):
 				status = http.StatusBadRequest
 				message = `invalid upload filename`
