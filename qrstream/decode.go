@@ -12,6 +12,13 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
+const (
+	defaultMaxCollectedBytes = 128 << 20
+	defaultMaxDecodedBytes   = 128 << 20
+	defaultMaxStreams        = 16
+	defaultMaxFrames         = 1 << 16
+)
+
 // Progress reports collection state after a frame was added.
 type Progress struct {
 	FileID uint32
@@ -28,8 +35,14 @@ type Progress struct {
 // extraction outside the lock, so calling it from one goroutine per
 // core parallelizes image decoding.
 type Collector struct {
-	mu      sync.Mutex
-	streams map[uint32]*partial
+	mu                sync.Mutex
+	streams           map[uint32]*partial
+	collectedBytes    int64
+	collectedFrames   int
+	maxCollectedBytes int64
+	maxDecodedBytes   uint64
+	maxStreams        int
+	maxFrames         int
 }
 
 type partial struct {
@@ -42,10 +55,25 @@ type partial struct {
 	picker   *ltPicker
 	matrix   *ltMatrix
 	seen     map[uint16]bool // seeds already added
+	bytes    int64
+	frames   int
 }
 
+// NewCollector returns a collector with bounded frame storage and decoded
+// output. Call Forget after consuming a stream to release its share of the
+// collector's limits.
 func NewCollector() *Collector {
-	return &Collector{streams: make(map[uint32]*partial)}
+	return newCollector(defaultMaxCollectedBytes, defaultMaxDecodedBytes)
+}
+
+func newCollector(maxCollectedBytes int64, maxDecodedBytes uint64) *Collector {
+	return &Collector{
+		streams:           make(map[uint32]*partial),
+		maxCollectedBytes: maxCollectedBytes,
+		maxDecodedBytes:   maxDecodedBytes,
+		maxStreams:        defaultMaxStreams,
+		maxFrames:         defaultMaxFrames,
+	}
 }
 
 // Add decodes one image and registers the frame it contains.
@@ -75,9 +103,16 @@ func (c *Collector) AddBytes(raw []byte) (Progress, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	p := c.streams[h.fileID]
+	newStream := p == nil
 	if p == nil {
+		if len(c.streams) >= c.maxStreams {
+			return Progress{}, fmt.Errorf("qrstream: active stream limit of %d reached", c.maxStreams)
+		}
+		blockLen := max(len(chunk), 1)
+		if int64(blockLen) > c.maxCollectedBytes/int64(h.total) {
+			return Progress{}, fmt.Errorf("qrstream: stream %08x frame geometry exceeds %d-byte collection limit", h.fileID, c.maxCollectedBytes)
+		}
 		p = &partial{flags: h.flags, total: h.total, chunks: make(map[uint16][]byte)}
-		c.streams[h.fileID] = p
 	} else if p.total != h.total || p.flags != h.flags {
 		return Progress{}, fmt.Errorf("qrstream: frame %d/%d inconsistent with stream %08x", h.seq, h.total, h.fileID)
 	}
@@ -92,8 +127,14 @@ func (c *Collector) AddBytes(raw []byte) (Progress, error) {
 			return Progress{}, fmt.Errorf("qrstream: fountain block length %d inconsistent with stream %08x", len(chunk), h.fileID)
 		}
 		if !p.seen[h.seq] {
+			if err := c.reserve(p, len(chunk)); err != nil {
+				return Progress{}, err
+			}
 			p.seen[h.seq] = true
 			p.matrix.addEquation(p.picker.indices(int64(h.seq)), bytes.Clone(chunk))
+		}
+		if newStream {
+			c.streams[h.fileID] = p
 		}
 		return Progress{
 			FileID: h.fileID,
@@ -103,7 +144,13 @@ func (c *Collector) AddBytes(raw []byte) (Progress, error) {
 		}, nil
 	}
 	if _, dup := p.chunks[h.seq]; !dup {
+		if err := c.reserve(p, len(chunk)); err != nil {
+			return Progress{}, err
+		}
 		p.chunks[h.seq] = bytes.Clone(chunk)
+	}
+	if newStream {
+		c.streams[h.fileID] = p
 	}
 	return Progress{
 		FileID: h.fileID,
@@ -111,6 +158,21 @@ func (c *Collector) AddBytes(raw []byte) (Progress, error) {
 		Total:  int(p.total),
 		Done:   len(p.chunks) == int(p.total),
 	}, nil
+}
+
+func (c *Collector) reserve(p *partial, size int) error {
+	if c.collectedFrames >= c.maxFrames {
+		return fmt.Errorf("qrstream: collected frame limit of %d reached", c.maxFrames)
+	}
+	n := int64(size)
+	if n > c.maxCollectedBytes-c.collectedBytes {
+		return fmt.Errorf("qrstream: collected frame data exceeds %d-byte limit", c.maxCollectedBytes)
+	}
+	p.bytes += n
+	p.frames++
+	c.collectedBytes += n
+	c.collectedFrames++
+	return nil
 }
 
 // Missing lists the frame indices still needed for the given stream.
@@ -138,6 +200,10 @@ func (c *Collector) Missing(fileID uint32) []int {
 // to recognize and skip its later frames without re-collecting.
 func (c *Collector) Forget(fileID uint32) {
 	c.mu.Lock()
+	if p := c.streams[fileID]; p != nil {
+		c.collectedBytes -= p.bytes
+		c.collectedFrames -= p.frames
+	}
 	delete(c.streams, fileID)
 	c.mu.Unlock()
 }
@@ -220,7 +286,9 @@ func (c *Collector) fileLocked(id uint32) (name string, data []byte, err error) 
 	}
 	container := payload
 	if p.flags&flagStore == 0 {
-		r, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
+		r, err := zstd.NewReader(nil,
+			zstd.WithDecoderConcurrency(1),
+			zstd.WithDecoderMaxMemory(c.maxDecodedBytes))
 		if err != nil {
 			return "", nil, err
 		}
