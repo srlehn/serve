@@ -130,13 +130,15 @@ var (
 )
 
 type server struct {
-	files          fs.FS
-	uploadRoot     *os.Root
-	browser        *filebrowser.Handler
-	template       *template.Template
-	logger         *log.Logger
-	browserLogging bool
-	uploadLimit    int64
+	files           fs.FS
+	uploadRoot      *os.Root
+	archiveRoot     *os.Root
+	browser         *filebrowser.Handler
+	template        *template.Template
+	logger          *log.Logger
+	browserLogging  bool
+	uploadLimit     int64
+	archiveStatuses archiveStatusStore
 }
 
 func newServer(files fs.FS, uploadRoot *os.Root, logger *log.Logger, browserLogging bool, uploadLimit int64) (*server, error) {
@@ -155,6 +157,9 @@ func newServer(files fs.FS, uploadRoot *os.Root, logger *log.Logger, browserLogg
 		browserLogging: browserLogging,
 		uploadLimit:    uploadLimit,
 	}
+	if uploadRoot != nil && sameFileSystem(files, uploadRoot.FS()) {
+		s.archiveRoot = uploadRoot
+	}
 	s.browser, err = filebrowser.NewHandler(
 		files,
 		filebrowser.WithRenderer(s.renderDirectory),
@@ -169,6 +174,9 @@ func newServer(files fs.FS, uploadRoot *os.Root, logger *log.Logger, browserLogg
 func (s *server) mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.page)
+	mux.HandleFunc("/.serve/archive", s.archive)
+	mux.HandleFunc("/.serve/archive-status", s.archiveStatus)
+	mux.HandleFunc("/.serve/", http.NotFound)
 	if s.uploadRoot != nil {
 		mux.HandleFunc("/upload", s.upload)
 	}
@@ -598,15 +606,17 @@ const (
 )
 
 type pageEntry struct {
-	Name   string
-	Href   string
-	QRHref string
-	Note   string
-	Icon   listingIcon
+	Name        string
+	Href        string
+	QRHref      string
+	ArchiveHref string
+	Note        string
+	Icon        listingIcon
 }
 
 type pageData struct {
 	Files          []pageEntry
+	ArchiveURL     string
 	UploadURL      string
 	QRURL          string
 	WorkerURL      string
@@ -637,6 +647,7 @@ func (s *server) renderDirectory(w io.Writer, req *http.Request, directory fileb
 				entry.Note = `symlink directory not served`
 			} else {
 				entry.Href = file.Href
+				entry.ArchiveHref = archiveURL(file.Path)
 			}
 		case file.IsRegular():
 			entry.Href = file.Href
@@ -660,6 +671,7 @@ func (s *server) renderDirectory(w io.Writer, req *http.Request, directory fileb
 	}
 	data := pageData{
 		Files:          entries,
+		ArchiveURL:     archiveURL(directory.Name),
 		UploadURL:      uploadURL,
 		QRURL:          qrURL,
 		WorkerURL:      workerURL,
@@ -668,6 +680,10 @@ func (s *server) renderDirectory(w io.Writer, req *http.Request, directory fileb
 		BrowserLogging: s.browserLogging,
 	}
 	return s.template.Execute(w, data)
+}
+
+func archiveURL(directory string) string {
+	return `/.serve/archive?` + url.Values{`path`: {directory}}.Encode()
 }
 
 func listingFileIcon(name string) listingIcon {

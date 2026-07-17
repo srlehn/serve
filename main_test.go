@@ -406,6 +406,9 @@ func TestServerReadSideUsesProvidedFS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if srv.archiveRoot != nil {
+		t.Fatal("writable root was incorrectly associated with a different read filesystem")
+	}
 
 	rec := httptest.NewRecorder()
 	srv.page(rec, httptest.NewRequest(http.MethodGet, `/virtual.txt`, nil))

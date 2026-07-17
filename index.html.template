@@ -44,10 +44,21 @@
             <path d="M3.5 1.5h6l3 3v10h-9z"/>
             <path d="M9.5 1.5v3h3M5.5 7h5M5.5 9.5h5M5.5 12h3.5"/>
         </symbol>
+        <symbol id="action-icon-archive" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+            stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M1.5 3.5h5l1.5 2h6.5v8h-13zM1.5 5.5h13"/>
+            <path d="M8 7v4M6.25 9.5 8 11.25 9.75 9.5"/>
+        </symbol>
+        <symbol id="action-icon-qr" viewBox="0 0 16 16">
+            <path fill="currentColor" fill-rule="evenodd" d="M0 0h7v7H0zm1 1v5h5V1zm1 1h3v3H2zM9 0h7v7H9zm1 1v5h5V1zm1 1h3v3h-3zM0 9h7v7H0zm1 1v5h5v-5zm1 1h3v3H2zM9 9h2v2H9zm4 0h3v3h-3zm-4 4h3v3H9zm5 1h2v2h-2z"/>
+        </symbol>
     </svg>
     <div class="split left">
-        <b>Files:</b><br>
-        {{range .Files}}<span class="file-name"><svg class="file-type-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#file-icon-{{.Icon}}"/></svg>{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</span>{{if .QRHref}} <a class="qr-transfer" href="{{.QRHref}}" title="transfer via QR codes"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M0 0h7v7H0zm1 1v5h5V1zm1 1h3v3H2zM9 0h7v7H9zm1 1v5h5V1zm1 1h3v3h-3zM0 9h7v7H0zm1 1v5h5v-5zm1 1h3v3H2zM9 9h2v2H9zm4 0h3v3h-3zm-4 4h3v3H9zm5 1h2v2h-2z"/></svg></a>{{end}}{{if .Note}} <small>({{.Note}})</small>{{end}}<br>
+        <span class="listing-title"><b>Files:</b> <a class="file-action archive-download" href="{{.ArchiveURL}}"
+            title="download this directory as a compressed Unix archive" aria-label="download this directory as a compressed Unix archive"><svg
+            viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#action-icon-archive"/></svg></a></span><br>
+        <p id="archiveStatus" class="archive-status" role="status" aria-live="polite" hidden></p>
+        {{range .Files}}<span class="file-name"><svg class="file-type-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#file-icon-{{.Icon}}"/></svg>{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</span>{{if .ArchiveHref}} <a class="file-action archive-download" href="{{.ArchiveHref}}" title="download directory as a compressed Unix archive" aria-label="download {{.Name}} as a compressed Unix archive"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#action-icon-archive"/></svg></a>{{end}}{{if .QRHref}} <a class="qr-transfer" href="{{.QRHref}}" title="transfer via QR codes" aria-label="transfer {{.Name}} via QR codes"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><use href="#action-icon-qr"/></svg></a>{{end}}{{if .Note}} <small>({{.Note}})</small>{{end}}<br>
         {{end}}
     </div>
     <div class="split right">
@@ -182,6 +193,76 @@
         request.send(data);
     });
     {{end}}
+
+    const archiveStatus = document.querySelector('#archiveStatus');
+    function newArchiveToken() {
+        const bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+    }
+    function showArchiveStatus(message) {
+        archiveStatus.hidden = false;
+        archiveStatus.textContent = message;
+    }
+    async function pollArchiveStatus(token, name, missingAttempts = 0) {
+        let response;
+        try {
+            response = await fetch('/.serve/archive-status?status=' + encodeURIComponent(token), {
+                cache: 'no-store',
+            });
+        } catch {
+            showArchiveStatus('waiting for archive status');
+            setTimeout(() => pollArchiveStatus(token, name, missingAttempts), 1000);
+            return;
+        }
+        if (response.status === 404) {
+            if (missingAttempts < 20) {
+                setTimeout(() => pollArchiveStatus(token, name, missingAttempts + 1), 500);
+            } else {
+                showArchiveStatus('archive status unavailable for ' + name);
+            }
+            return;
+        }
+        if (response.status === 202) {
+            showArchiveStatus('archiving ' + name);
+            setTimeout(() => pollArchiveStatus(token, name), 750);
+            return;
+        }
+        if (!response.ok) {
+            showArchiveStatus('archive status failed (' + response.status + ')');
+            return;
+        }
+        const result = await response.json();
+        const filename = result.filename || name;
+        if (result.error) {
+            const message = 'archive failed: ' + result.error;
+            showArchiveStatus(message);
+            alert(message);
+        } else if (result.warnings) {
+            const message = filename + ' completed with ' + result.warnings + ' warning' + (result.warnings === 1 ? '' : 's');
+            showArchiveStatus(message);
+            alert(message + '; see the error report inside the archive');
+        } else {
+            showArchiveStatus(filename + ' complete');
+        }
+    }
+    for (const link of document.querySelectorAll('.archive-download')) {
+        link.addEventListener('click', e => {
+            e.preventDefault();
+            const token = newArchiveToken();
+            const target = new URL(link.href);
+            target.searchParams.set('status', token);
+            const download = document.createElement('a');
+            download.href = target;
+            download.download = '';
+            document.body.append(download);
+            download.click();
+            download.remove();
+            const name = link.getAttribute('aria-label').replace(/^download /, '').replace(/ as a compressed Unix archive$/, '');
+            showArchiveStatus('starting archive for ' + name);
+            pollArchiveStatus(token, name);
+        });
+    }
 
     const qrDialog = document.querySelector('.qr-dialog');
     const stream = qrDialog.querySelector('img');
