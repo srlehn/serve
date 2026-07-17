@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 func testServerWithOptions(t *testing.T, logger *log.Logger, browserLogging bool, uploadLimit int64) (*server, string) {
@@ -22,7 +23,7 @@ func testServerWithOptions(t *testing.T, logger *log.Logger, browserLogging bool
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { root.Close() })
-	srv, err := newServer(root, logger, browserLogging, uploadLimit)
+	srv, err := newServer(root.FS(), root, logger, browserLogging, uploadLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +349,7 @@ func TestNewServerRejectsNegativeUploadLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	if _, err := newServer(root, log.New(io.Discard, ``, 0), false, -1); err == nil {
+	if _, err := newServer(root.FS(), root, log.New(io.Discard, ``, 0), false, -1); err == nil {
 		t.Fatal("newServer accepted a negative upload limit")
 	}
 }
@@ -382,6 +383,39 @@ func TestDirectoryListingEscapesFileURLs(t *testing.T) {
 	want := `href="` + url.PathEscape(name) + `"`
 	if !strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("listing does not contain %q: %q", want, rec.Body.String())
+	}
+}
+
+func TestServerReadSideUsesProvidedFS(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, `root-only.txt`), []byte(`wrong tree`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	srv, err := newServer(
+		fstest.MapFS{`virtual.txt`: {Data: []byte(`virtual tree`)}},
+		root,
+		log.New(io.Discard, ``, 0),
+		false,
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.page(rec, httptest.NewRequest(http.MethodGet, `/virtual.txt`, nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != `virtual tree` {
+		t.Fatalf("virtual file response = %d %q", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	srv.page(rec, httptest.NewRequest(http.MethodGet, `/root-only.txt`, nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("writable-root-only file status = %d, want 404", rec.Code)
 	}
 }
 

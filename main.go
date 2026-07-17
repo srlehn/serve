@@ -25,14 +25,15 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
+	"github.com/srlehn/serve/filebrowser"
 	"github.com/srlehn/serve/qrstream"
 )
 
@@ -129,28 +130,43 @@ var (
 )
 
 type server struct {
+	files          fs.FS
 	root           *os.Root
+	browser        *filebrowser.Handler
 	template       *template.Template
 	logger         *log.Logger
 	browserLogging bool
 	uploadLimit    int64
 }
 
-func newServer(root *os.Root, logger *log.Logger, browserLogging bool, uploadLimit int64) (*server, error) {
+func newServer(files fs.FS, root *os.Root, logger *log.Logger, browserLogging bool, uploadLimit int64) (*server, error) {
 	if uploadLimit < 0 {
 		return nil, errors.New(`upload limit must not be negative`)
+	}
+	if root == nil {
+		return nil, errors.New(`writable root must not be nil`)
 	}
 	tp, err := template.New(`index`).Parse(pageTemplate)
 	if err != nil {
 		return nil, err
 	}
-	return &server{
+	s := &server{
+		files:          files,
 		root:           root,
 		template:       tp,
 		logger:         logger,
 		browserLogging: browserLogging,
 		uploadLimit:    uploadLimit,
-	}, nil
+	}
+	s.browser, err = filebrowser.NewHandler(
+		files,
+		filebrowser.WithRenderer(s.renderDirectory),
+		filebrowser.WithErrorHandler(s.requestError),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 func (s *server) mux() *http.ServeMux {
@@ -181,7 +197,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer root.Close()
-	srv, err := newServer(root, log.Default(), *browserLogging, int64(uploadLimit))
+	srv, err := newServer(root.FS(), root, log.Default(), *browserLogging, int64(uploadLimit))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -463,8 +479,6 @@ func (s *server) qrurl(w http.ResponseWriter, req *http.Request) {
 	w.Write(png)
 }
 
-var errSymlinkDirectory = errors.New(`symlink directories are not served`)
-
 // localName converts an io/fs-style slash-separated name into a local
 // path while rejecting absolute paths and dot traversal. The root is
 // represented by ".".
@@ -476,15 +490,6 @@ func localName(name string) (string, error) {
 		return ``, fs.ErrInvalid
 	}
 	return filepath.Localize(name)
-}
-
-func requestLocalName(urlPath string) (string, error) {
-	name := strings.TrimPrefix(urlPath, `/`)
-	if name == urlPath {
-		return ``, fs.ErrInvalid
-	}
-	name = strings.TrimSuffix(name, `/`)
-	return localName(name)
 }
 
 // rejectSymlinkDirectories checks every path component before opening
@@ -511,7 +516,7 @@ func rejectSymlinkDirectories(root *os.Root, name string) error {
 			return err
 		}
 		if target.IsDir() {
-			return fmt.Errorf("%w: %s", errSymlinkDirectory, filepath.ToSlash(current))
+			return fmt.Errorf("%w: %s", filebrowser.ErrSymlinkDirectory, filepath.ToSlash(current))
 		}
 	}
 	return nil
@@ -548,12 +553,12 @@ func (s *server) qr(w http.ResponseWriter, req *http.Request) {
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
-	name, err := localName(strings.TrimPrefix(req.URL.Path, `/qr/`))
-	if err != nil || name == `.` {
+	name := strings.TrimPrefix(req.URL.Path, `/qr/`)
+	if !fs.ValidPath(name) || name == `.` {
 		http.NotFound(w, req)
 		return
 	}
-	f, info, err := s.openPath(name)
+	f, info, err := filebrowser.Open(s.files, name)
 	if err != nil {
 		http.NotFound(w, req)
 		return
@@ -580,7 +585,7 @@ func (s *server) qr(w http.ResponseWriter, req *http.Request) {
 	// the deficit, so there is no single "last frame" the scanner
 	// must wait a full loop to catch (sequential mode's
 	// coupon-collector tail).
-	st, err := qrstream.Encode(filepath.Base(name), data, &qrstream.Options{Fountain: true})
+	st, err := qrstream.Encode(path.Base(name), data, &qrstream.Options{Fountain: true})
 	if err != nil {
 		s.requestError(w, req, http.StatusInternalServerError, `could not encode QR stream`, err)
 		return
@@ -601,12 +606,11 @@ const (
 )
 
 type pageEntry struct {
-	Name     string
-	Href     string
-	QRHref   string
-	Note     string
-	Icon     listingIcon
-	isFolder bool
+	Name   string
+	Href   string
+	QRHref string
+	Note   string
+	Icon   listingIcon
 }
 
 type pageData struct {
@@ -620,80 +624,39 @@ type pageData struct {
 }
 
 func (s *server) page(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodGet && req.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
-	name, err := requestLocalName(req.URL.Path)
-	if err != nil {
-		http.NotFound(w, req)
-		return
-	}
-	f, info, err := s.openPath(name)
-	if err != nil {
-		http.NotFound(w, req)
-		return
-	}
-	defer f.Close()
-	if !info.IsDir() {
-		s.download(w, req, f, info)
-		return
-	}
-	if name != `.` && !strings.HasSuffix(req.URL.Path, `/`) {
-		target := req.URL.Path + `/`
-		if req.URL.RawQuery != `` {
-			target += `?` + req.URL.RawQuery
-		}
-		http.Redirect(w, req, target, http.StatusMovedPermanently)
-		return
-	}
-	files, err := f.Readdir(-1)
-	if err != nil {
-		s.requestError(w, req, http.StatusInternalServerError, `could not read directory`, err)
-		return
-	}
-	entries := make([]pageEntry, 0, len(files))
-	for _, file := range files {
-		entry := pageEntry{Name: file.Name(), Icon: listingFileIcon(file.Name())}
-		entryName := filepath.Join(name, file.Name())
+	s.browser.ServeHTTP(w, req)
+}
+
+func (s *server) renderDirectory(w io.Writer, req *http.Request, directory filebrowser.Directory) error {
+	entries := make([]pageEntry, 0, len(directory.Entries))
+	for _, file := range directory.Entries {
+		entry := pageEntry{Name: file.Name, Icon: listingFileIcon(file.Name)}
 		switch {
-		case file.IsDir():
-			entry.Icon = listingIconFolder
-			entry.isFolder = true
-			entry.Href = url.PathEscape(file.Name()) + `/`
-		case file.Mode()&os.ModeSymlink != 0:
-			target, err := s.root.Stat(entryName)
-			switch {
-			case err != nil:
+		case file.Err != nil:
+			if file.Symlink {
 				entry.Icon = listingIconFile
 				entry.Note = `unavailable symlink`
-			case target.IsDir():
-				entry.Icon = listingIconFolder
-				entry.isFolder = true
-				entry.Note = `symlink directory not served`
-			case target.Mode().IsRegular():
-				entry.Href = url.PathEscape(file.Name())
-				entry.QRHref = (&url.URL{Path: `/qr/` + filepath.ToSlash(entryName)}).EscapedPath()
-			default:
-				entry.Note = `special file not served`
+			} else {
+				entry.Note = `unavailable file`
 			}
-		case file.Mode().IsRegular():
-			entry.Href = url.PathEscape(file.Name())
-			entry.QRHref = (&url.URL{Path: `/qr/` + filepath.ToSlash(entryName)}).EscapedPath()
+		case file.IsDir():
+			entry.Icon = listingIconFolder
+			if file.Symlink {
+				entry.Note = `symlink directory not served`
+			} else {
+				entry.Href = file.Href
+			}
+		case file.IsRegular():
+			entry.Href = file.Href
+			entry.QRHref = (&url.URL{Path: `/qr/` + file.Path}).EscapedPath()
 		default:
 			entry.Note = `special file not served`
 		}
 		entries = append(entries, entry)
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].isFolder != entries[j].isFolder {
-			return entries[i].isFolder
-		}
-		return entries[i].Name < entries[j].Name
-	})
 	uploadURL := `/upload`
-	if name != `.` {
-		uploadURL += `?` + url.Values{`dir`: {filepath.ToSlash(name)}}.Encode()
+	if directory.Name != `.` {
+		uploadURL += `?` + url.Values{`dir`: {directory.Name}}.Encode()
 	}
 	qrURL := `/qrurl?` + url.Values{`path`: {req.URL.Path}}.Encode()
 	workerURL := `/qrworker.js`
@@ -709,15 +672,7 @@ func (s *server) page(w http.ResponseWriter, req *http.Request) {
 		ShowQR:         !loopbackHost(req.Host) || altHost() != ``,
 		BrowserLogging: s.browserLogging,
 	}
-	var body bytes.Buffer
-	if err := s.template.Execute(&body, data); err != nil {
-		s.requestError(w, req, http.StatusInternalServerError, `could not render directory`, err)
-		return
-	}
-	w.Header().Set(`Content-Type`, `text/html; charset=utf-8`)
-	if req.Method != http.MethodHead {
-		body.WriteTo(w)
-	}
+	return s.template.Execute(w, data)
 }
 
 func listingFileIcon(name string) listingIcon {
@@ -753,52 +708,11 @@ func listingFileIcon(name string) listingIcon {
 		return listingIconVideo
 	case strings.HasPrefix(mediaType, `audio/`):
 		return listingIconAudio
-	case rawTextMediaType(mediaType):
+	case filebrowser.IsTextMediaType(mediaType):
 		return listingIconText
 	default:
 		return listingIconFile
 	}
-}
-
-func (s *server) download(w http.ResponseWriter, req *http.Request, f *os.File, info os.FileInfo) {
-	if !info.Mode().IsRegular() {
-		http.NotFound(w, req)
-		return
-	}
-	w.Header().Set(`Content-Type`, rawFileContentType(f, info.Name()))
-	w.Header().Set(`X-Content-Type-Options`, `nosniff`)
-	http.ServeContent(w, req, info.Name(), info.ModTime(), f)
-}
-
-func rawFileContentType(f *os.File, name string) string {
-	var head [512]byte
-	n, err := f.ReadAt(head[:], 0)
-	if err != nil && err != io.EOF {
-		return `application/octet-stream`
-	}
-	sniffed := http.DetectContentType(head[:n])
-	byExtension := mime.TypeByExtension(strings.ToLower(filepath.Ext(name)))
-	for _, contentType := range []string{byExtension, sniffed} {
-		mediaType, _, err := mime.ParseMediaType(contentType)
-		if err == nil && rawTextMediaType(mediaType) {
-			return `text/plain; charset=utf-8`
-		}
-	}
-	if byExtension != `` {
-		return byExtension
-	}
-	return sniffed
-}
-
-func rawTextMediaType(mediaType string) bool {
-	if strings.HasPrefix(mediaType, `text/`) {
-		return true
-	}
-	switch mediaType {
-	case `application/ecmascript`, `application/javascript`, `application/json`, `application/xml`:
-		return true
-	}
-	return strings.HasSuffix(mediaType, `+json`) || strings.HasSuffix(mediaType, `+xml`)
 }
 
 func sameOrigin(req *http.Request) bool {
