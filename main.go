@@ -19,6 +19,7 @@ import (
 	"io/fs"
 	"log"
 	"math/big"
+	"mime"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -607,7 +608,40 @@ func (s *server) download(w http.ResponseWriter, req *http.Request, f *os.File, 
 		http.NotFound(w, req)
 		return
 	}
+	w.Header().Set(`Content-Type`, rawFileContentType(f, info.Name()))
+	w.Header().Set(`X-Content-Type-Options`, `nosniff`)
 	http.ServeContent(w, req, info.Name(), info.ModTime(), f)
+}
+
+func rawFileContentType(f *os.File, name string) string {
+	var head [512]byte
+	n, err := f.ReadAt(head[:], 0)
+	if err != nil && err != io.EOF {
+		return `application/octet-stream`
+	}
+	sniffed := http.DetectContentType(head[:n])
+	byExtension := mime.TypeByExtension(strings.ToLower(filepath.Ext(name)))
+	for _, contentType := range []string{byExtension, sniffed} {
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err == nil && rawTextMediaType(mediaType) {
+			return `text/plain; charset=utf-8`
+		}
+	}
+	if byExtension != `` {
+		return byExtension
+	}
+	return sniffed
+}
+
+func rawTextMediaType(mediaType string) bool {
+	if strings.HasPrefix(mediaType, `text/`) {
+		return true
+	}
+	switch mediaType {
+	case `application/ecmascript`, `application/javascript`, `application/json`, `application/xml`:
+		return true
+	}
+	return strings.HasSuffix(mediaType, `+json`) || strings.HasSuffix(mediaType, `+xml`)
 }
 
 func sameOrigin(req *http.Request) bool {

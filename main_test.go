@@ -238,6 +238,51 @@ func TestDirectoryListingEscapesFileURLs(t *testing.T) {
 	}
 }
 
+func TestRawFilesUseSafeContentTypes(t *testing.T) {
+	srv, dir := testServer(t)
+	tests := []struct {
+		name        string
+		content     []byte
+		contentType string
+	}{
+		{`page.html`, []byte(`<!doctype html><h1>active</h1>`), `text/plain; charset=utf-8`},
+		{`page.html.template`, []byte(`<h1>{{.Value}}</h1>`), `text/plain; charset=utf-8`},
+		{`script.js`, []byte(`alert('active')`), `text/plain; charset=utf-8`},
+		{`drawing.svg`, []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`), `text/plain; charset=utf-8`},
+		{`unknown.data`, []byte(`<h1>sniffed markup</h1>`), `text/plain; charset=utf-8`},
+		{`photo.png`, []byte("\x89PNG\r\n\x1a\n"), `image/png`},
+		{`manual.pdf`, []byte("%PDF-1.7\n"), `application/pdf`},
+		{`blob.bin`, []byte{0, 1, 2, 3}, `application/octet-stream`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := os.WriteFile(filepath.Join(dir, tt.name), tt.content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			srv.page(rec, httptest.NewRequest(http.MethodGet, `/`+tt.name, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("raw file status = %d", rec.Code)
+			}
+			if got := rec.Header().Get(`Content-Type`); got != tt.contentType {
+				t.Fatalf("raw file content type = %q, want %q", got, tt.contentType)
+			}
+			if got := rec.Header().Get(`X-Content-Type-Options`); got != `nosniff` {
+				t.Fatalf("X-Content-Type-Options = %q", got)
+			}
+			if !bytes.Equal(rec.Body.Bytes(), tt.content) {
+				t.Fatalf("raw file body = %q", rec.Body.Bytes())
+			}
+		})
+	}
+
+	rec := httptest.NewRecorder()
+	srv.page(rec, httptest.NewRequest(http.MethodGet, `/`, nil))
+	if got := rec.Header().Get(`Content-Type`); got != `text/html; charset=utf-8` {
+		t.Fatalf("generated page content type = %q", got)
+	}
+}
+
 func TestUploadPageUsesControlledSubmission(t *testing.T) {
 	srv, _ := testServer(t)
 	rec := httptest.NewRecorder()
