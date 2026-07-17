@@ -158,7 +158,8 @@ dialog::backdrop {
     display: block;
     width: 94vmin;
     max-width: calc(100vw - 32px);
-    max-height: calc(100vh - 72px);
+    max-height: calc(100vh - 76px);
+    max-height: calc(100dvh - 76px);
     object-fit: contain;
     image-rendering: pixelated;
 }
