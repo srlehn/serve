@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -923,5 +924,81 @@ func TestQRRejectsOversizedFile(t *testing.T) {
 	srv.qr(rec, httptest.NewRequest(http.MethodGet, `/qr/large.bin`, nil))
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized QR status = %d, want 413", rec.Code)
+	}
+}
+
+func TestTunnelInterface(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		flags  net.Flags
+		tunnel bool
+	}{
+		{`eth0`, net.FlagUp | net.FlagBroadcast, false},
+		{`wlan0`, net.FlagUp | net.FlagBroadcast, false},
+		{`enp3s0`, net.FlagUp, false},
+		{`tailscale0`, net.FlagUp | net.FlagPointToPoint, true},
+		{`wg0`, net.FlagUp | net.FlagPointToPoint, true},
+		{`tun0`, net.FlagUp, true},
+		{`tap1`, net.FlagUp, true},
+		{`utun3`, net.FlagUp, true},
+		{`zt7nnig26`, net.FlagUp, true},
+		{`ppp0`, net.FlagUp, true},
+	} {
+		if got := tunnelInterface(tt.name, tt.flags); got != tt.tunnel {
+			t.Errorf("tunnelInterface(%q, %v) = %t, want %t", tt.name, tt.flags, got, tt.tunnel)
+		}
+	}
+}
+
+func TestCollectHostCandidates(t *testing.T) {
+	ifaces := []ifaceAddrs{
+		{name: `lo`, flags: net.FlagUp | net.FlagLoopback, ips: []net.IP{net.ParseIP(`127.0.0.1`), net.ParseIP(`::1`)}},
+		{name: `eth0`, flags: net.FlagUp | net.FlagBroadcast, ips: []net.IP{
+			net.ParseIP(`192.168.1.5`),
+			net.ParseIP(`fe80::1`),
+			net.ParseIP(`2001:db8::5`),
+		}},
+		{name: `tailscale0`, flags: net.FlagUp | net.FlagPointToPoint, ips: []net.IP{
+			net.ParseIP(`100.64.0.3`),
+			net.ParseIP(`fd7a:115c:a1e0::3`),
+		}},
+		{name: `wlan0`, flags: net.FlagUp | net.FlagBroadcast, ips: []net.IP{
+			net.ParseIP(`10.0.0.7`),
+			net.ParseIP(`10.0.0.7`), // duplicate must not repeat
+		}},
+	}
+	// The default route leaves via wlan0, so its address must lead
+	// even though eth0 is listed first.
+	got := collectHostCandidates(net.ParseIP(`10.0.0.7`), ifaces)
+	want := []hostCandidate{
+		{host: `10.0.0.7`, iface: `wlan0`},
+		{host: `192.168.1.5`, iface: `eth0`},
+		{host: `100.64.0.3`, iface: `tailscale0`, tunnel: true},
+		{host: `[2001:db8::5]`, iface: `eth0`},
+		{host: `[fd7a:115c:a1e0::3]`, iface: `tailscale0`, tunnel: true},
+		{host: `localhost`},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("candidates = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("candidate %d = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestHostLabel(t *testing.T) {
+	for _, tt := range []struct {
+		candidate hostCandidate
+		want      string
+	}{
+		{hostCandidate{host: `localhost`}, ``},
+		{hostCandidate{host: `192.168.1.5`, iface: `eth0`}, ` (eth0)`},
+		{hostCandidate{host: `100.64.0.3`, iface: `tailscale0`, tunnel: true}, ` (tailscale0, VPN/tunnel)`},
+	} {
+		if got := hostLabel(tt.candidate); got != tt.want {
+			t.Errorf("hostLabel(%#v) = %q, want %q", tt.candidate, got, tt.want)
+		}
 	}
 }

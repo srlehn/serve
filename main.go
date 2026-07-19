@@ -229,39 +229,126 @@ func main() {
 	}
 }
 
-// candidateHosts lists hosts another device might reach, in
-// preference order: the default-route IPv4 first, remaining IPv4s,
-// then IPv6 (bracketed; link-local excluded - its zone does not
-// transfer to another device), localhost last.
-func candidateHosts() []string {
-	var v4, v6 []string
-	add := func(ip net.IP) {
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast() {
-			return
+// hostCandidate is a host another device might reach, labeled with
+// the network interface it belongs to so a VPN or tunnel address is
+// not mistaken for the local-network one.
+type hostCandidate struct {
+	host   string // formatted for URLs: IPv6 bracketed
+	iface  string // empty for localhost and the label-less fallback
+	tunnel bool
+}
+
+// tunnelInterface reports whether an interface carries VPN or tunnel
+// traffic rather than an ordinary LAN. The point-to-point flag covers
+// tun-style VPNs such as Tailscale and WireGuard; the name prefixes
+// catch tap-style and userspace tunnels that do not set it.
+func tunnelInterface(name string, flags net.Flags) bool {
+	if flags&net.FlagPointToPoint != 0 {
+		return true
+	}
+	for _, prefix := range []string{`tun`, `tap`, `utun`, `wg`, `tailscale`, `zt`, `ppp`} {
+		if strings.HasPrefix(name, prefix) {
+			return true
 		}
-		if ip.To4() != nil {
-			if s := ip.String(); !slices.Contains(v4, s) {
-				v4 = append(v4, s)
+	}
+	return false
+}
+
+// ifaceAddrs is one up interface with its addresses, decoupled from
+// net.Interfaces so candidate collection is testable.
+type ifaceAddrs struct {
+	name  string
+	flags net.Flags
+	ips   []net.IP
+}
+
+func localIfaceAddrs() []ifaceAddrs {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		// Fall back to unlabeled addresses rather than none.
+		var ips []net.IP
+		if addrs, err := net.InterfaceAddrs(); err == nil {
+			for _, a := range addrs {
+				if n, ok := a.(*net.IPNet); ok {
+					ips = append(ips, n.IP)
+				}
 			}
-		} else if s := `[` + ip.String() + `]`; !slices.Contains(v6, s) {
-			v6 = append(v6, s)
 		}
+		return []ifaceAddrs{{ips: ips}}
 	}
-	// A UDP connect to TEST-NET-1 asks the kernel which local address
-	// its default route would use. No packet is sent because the socket
-	// is never written to, and 192.0.2.0/24 is reserved for examples.
-	if c, err := net.Dial(`udp`, `192.0.2.1:9`); err == nil {
-		add(c.LocalAddr().(*net.UDPAddr).IP)
-		c.Close()
-	}
-	if addrs, err := net.InterfaceAddrs(); err == nil {
+	var out []ifaceAddrs
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		ia := ifaceAddrs{name: ifc.Name, flags: ifc.Flags}
 		for _, a := range addrs {
 			if n, ok := a.(*net.IPNet); ok {
-				add(n.IP)
+				ia.ips = append(ia.ips, n.IP)
+			}
+		}
+		out = append(out, ia)
+	}
+	return out
+}
+
+// defaultRouteIP asks the kernel which local address its default
+// route would use, via a UDP connect to TEST-NET-1. No packet is sent
+// because the socket is never written to, and 192.0.2.0/24 is
+// reserved for examples.
+func defaultRouteIP() net.IP {
+	c, err := net.Dial(`udp`, `192.0.2.1:9`)
+	if err != nil {
+		return nil
+	}
+	defer c.Close()
+	return c.LocalAddr().(*net.UDPAddr).IP
+}
+
+// candidateHosts lists hosts another device might reach, in
+// preference order: LAN IPv4 before tunnel IPv4 with the
+// default-route address first within its group, then IPv6 the same
+// way (bracketed; link-local excluded - its zone does not transfer
+// to another device), localhost last.
+func candidateHosts() []hostCandidate {
+	return collectHostCandidates(defaultRouteIP(), localIfaceAddrs())
+}
+
+func collectHostCandidates(defaultRoute net.IP, ifaces []ifaceAddrs) []hostCandidate {
+	// group order: LAN IPv4, tunnel IPv4, LAN IPv6, tunnel IPv6
+	var groups [4][]hostCandidate
+	seen := make(map[string]bool)
+	for _, ifc := range ifaces {
+		tunnel := tunnelInterface(ifc.name, ifc.flags)
+		for _, ip := range ifc.ips {
+			if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast() {
+				continue
+			}
+			host, group := ip.String(), 0
+			if ip.To4() == nil {
+				host, group = `[`+host+`]`, 2
+			}
+			if tunnel {
+				group++
+			}
+			if seen[host] {
+				continue
+			}
+			seen[host] = true
+			c := hostCandidate{host: host, iface: ifc.name, tunnel: tunnel}
+			if ip.Equal(defaultRoute) {
+				groups[group] = append([]hostCandidate{c}, groups[group]...)
+			} else {
+				groups[group] = append(groups[group], c)
 			}
 		}
 	}
-	return append(append(v4, v6...), `localhost`)
+	out := slices.Concat(groups[0], groups[1], groups[2], groups[3])
+	return append(out, hostCandidate{host: `localhost`})
 }
 
 // alt holds the probe-passed non-loopback hosts, in preference
@@ -295,7 +382,7 @@ func printURL() {
 	var wg sync.WaitGroup
 	for i, h := range hosts {
 		wg.Go(func() {
-			if resp, err := client.Head(`http://` + h + httpPort + `/`); err == nil {
+			if resp, err := client.Head(`http://` + h.host + httpPort + `/`); err == nil {
 				resp.Body.Close()
 				reachable[i] = true
 			}
@@ -306,20 +393,33 @@ func printURL() {
 		if !reachable[i] {
 			continue
 		}
-		if h != `localhost` {
+		if h.host != `localhost` {
 			alt.Lock()
-			alt.hosts = append(alt.hosts, h)
+			alt.hosts = append(alt.hosts, h.host)
 			alt.Unlock()
 		}
-		for _, u := range []string{`http://` + h + httpPort + `/`, `https://` + h + httpsPort + `/`} {
-			if h != `localhost` {
+		for _, u := range []string{`http://` + h.host + httpPort + `/`, `https://` + h.host + httpsPort + `/`} {
+			if h.host != `localhost` {
 				if q, err := qrText(u); err == nil {
 					fmt.Print(q)
 				}
 			}
-			fmt.Println(u)
+			fmt.Println(u + hostLabel(h))
 		}
 	}
+}
+
+// hostLabel renders the interface suffix printed after a URL, e.g.
+// " (eth0)" or " (tailscale0, VPN/tunnel)".
+func hostLabel(h hostCandidate) string {
+	if h.iface == `` {
+		return ``
+	}
+	label := ` (` + h.iface
+	if h.tunnel {
+		label += `, VPN/tunnel`
+	}
+	return label + `)`
 }
 
 // serverCert generates a fresh in-memory self-signed certificate on
@@ -350,7 +450,7 @@ func serverCert() (tls.Certificate, error) {
 		tmpl.DNSNames = append(tmpl.DNSNames, hn)
 	}
 	for _, h := range candidateHosts() {
-		if ip := net.ParseIP(strings.Trim(h, `[]`)); ip != nil {
+		if ip := net.ParseIP(strings.Trim(h.host, `[]`)); ip != nil {
 			tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
 		}
 	}
