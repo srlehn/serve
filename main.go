@@ -34,14 +34,16 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 	"github.com/srlehn/serve/filebrowser"
 	"github.com/srlehn/serve/internal/payload"
+	"github.com/srlehn/serve/internal/unixarchive"
+	"github.com/srlehn/serve/jabstream"
 	"github.com/srlehn/serve/qrstream"
 )
 
 const (
-	httpPort      = `:8000`
-	httpsPort     = `:8443`
-	maxQRFileSize = 64 << 20
-	maxClientLog  = 16 << 10
+	httpPort           = `:8000`
+	httpsPort          = `:8443`
+	maxBarcodeFileSize = 64 << 20
+	maxClientLog       = 16 << 10
 )
 
 type byteSizeValue int64
@@ -181,6 +183,7 @@ func (s *server) mux() *http.ServeMux {
 		mux.HandleFunc("/upload", s.upload)
 	}
 	mux.HandleFunc("/qr/", s.qr)
+	mux.HandleFunc("/jab/", s.jab)
 	mux.HandleFunc("/qrurl", s.qrurl)
 	if s.browserLogging {
 		mux.HandleFunc("/log", s.clientLog)
@@ -650,35 +653,83 @@ func (s *server) requestError(w http.ResponseWriter, req *http.Request, status i
 	http.Error(w, message, status)
 }
 
-// qr serves the file named after /qr/ as an endless loop of QR codes
-// (qrstream format, a multipart motion stream so frames render
-// lazily) for camera transfer without any network.
+// barcodeSource resolves the transfer target of a barcode sender: a
+// regular file streams as-is, a directory as its compressed Unix
+// archive. It writes the per-request error response itself when it
+// fails. Symlinked directories stay rejected exactly as in the file
+// tree.
+func (s *server) barcodeSource(w http.ResponseWriter, req *http.Request, prefix string) (payload.Source, bool) {
+	name := strings.TrimPrefix(req.URL.Path, prefix)
+	if !fs.ValidPath(name) {
+		http.NotFound(w, req)
+		return nil, false
+	}
+	file, info, err := filebrowser.Open(s.files, name)
+	if err != nil {
+		http.NotFound(w, req)
+		return nil, false
+	}
+	file.Close()
+	if info.IsDir() {
+		source, err := unixarchive.New(s.files, name, unixarchive.Options{
+			RootName: s.archiveRootName(name),
+			OSRoot:   s.archiveRoot,
+			Warning: func(warning payload.Warning) {
+				s.logger.Printf("barcode archive path=%q member=%q warning=%q", name, warning.Path, warning.Message)
+			},
+		})
+		if err != nil {
+			http.NotFound(w, req)
+			return nil, false
+		}
+		return source, true
+	}
+	source, err := payload.OpenFile(s.files, name)
+	if err != nil {
+		http.NotFound(w, req)
+		return nil, false
+	}
+	return source, true
+}
+
+// barcodePayload produces the bounded in-memory payload a barcode
+// stream encodes, writing the per-request error response itself when
+// it fails. label names the transfer in error messages.
+func (s *server) barcodePayload(w http.ResponseWriter, req *http.Request, source payload.Source, label string) ([]byte, bool) {
+	if size, ok := source.Size(); ok && size > maxBarcodeFileSize {
+		s.requestError(w, req, http.StatusRequestEntityTooLarge, `file is too large for `+label+` transfer`, nil)
+		return nil, false
+	}
+	data, report, err := payload.ReadAll(req.Context(), source, maxBarcodeFileSize)
+	if err != nil {
+		if errors.Is(err, payload.ErrTooLarge) {
+			s.requestError(w, req, http.StatusRequestEntityTooLarge, `file is too large for `+label+` transfer`, nil)
+			return nil, false
+		}
+		s.requestError(w, req, http.StatusInternalServerError, `could not read file`, err)
+		return nil, false
+	}
+	if warnings := report.WarningCount(); warnings > 0 {
+		s.logger.Printf("barcode payload path=%q warnings=%d", req.URL.Path, warnings)
+	}
+	return data, true
+}
+
+// qr serves the file or directory archive named after /qr/ as an
+// endless loop of QR codes (qrstream format, a multipart motion
+// stream so frames render lazily) for camera transfer without any
+// network.
 func (s *server) qr(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
-	name := strings.TrimPrefix(req.URL.Path, `/qr/`)
-	if !fs.ValidPath(name) || name == `.` {
-		http.NotFound(w, req)
+	source, ok := s.barcodeSource(w, req, `/qr/`)
+	if !ok {
 		return
 	}
-	source, err := payload.OpenFile(s.files, name)
-	if err != nil {
-		http.NotFound(w, req)
-		return
-	}
-	if size, ok := source.Size(); ok && size > maxQRFileSize {
-		s.requestError(w, req, http.StatusRequestEntityTooLarge, `file is too large for QR transfer`, nil)
-		return
-	}
-	data, _, err := payload.ReadAll(req.Context(), source, maxQRFileSize)
-	if err != nil {
-		if errors.Is(err, payload.ErrTooLarge) {
-			s.requestError(w, req, http.StatusRequestEntityTooLarge, `file is too large for QR transfer`, nil)
-			return
-		}
-		s.requestError(w, req, http.StatusInternalServerError, `could not read file`, err)
+	data, ok := s.barcodePayload(w, req, source, `QR`)
+	if !ok {
 		return
 	}
 	// Fountain mode for camera reception: every coded frame reduces
@@ -688,6 +739,30 @@ func (s *server) qr(w http.ResponseWriter, req *http.Request) {
 	st, err := qrstream.Encode(source.Filename(), data, &qrstream.Options{Fountain: true})
 	if err != nil {
 		s.requestError(w, req, http.StatusInternalServerError, `could not encode QR stream`, err)
+		return
+	}
+	st.ServeHTTP(w, req)
+}
+
+// jab serves the file or directory archive named after /jab/ as an
+// endless loop of JAB Code symbols, the higher-density color peer of
+// the QR sender with the same per-request guarantees.
+func (s *server) jab(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	source, ok := s.barcodeSource(w, req, `/jab/`)
+	if !ok {
+		return
+	}
+	data, ok := s.barcodePayload(w, req, source, `JAB Code`)
+	if !ok {
+		return
+	}
+	st, err := jabstream.Encode(source.Filename(), data, &jabstream.Options{Fountain: true})
+	if err != nil {
+		s.requestError(w, req, http.StatusInternalServerError, `could not encode JAB Code stream`, err)
 		return
 	}
 	st.ServeHTTP(w, req)
@@ -761,12 +836,14 @@ func jabScannerBackend(browserLogging bool) scannerBackend {
 
 type transferBackend struct {
 	ID               string
-	Available        bool
+	SenderAvailable  bool
+	ScannerAvailable bool
 	SenderPathPrefix string
 	WasmURL          string
 	ActionLabel      string
 	ActionClass      string
 	ActionIconID     string
+	DirActionIconID  string
 	Scanner          scannerBackend
 }
 
@@ -774,23 +851,30 @@ func configuredTransferBackends(browserLogging bool) []transferBackend {
 	return []transferBackend{
 		{
 			ID:               `qr`,
-			Available:        true,
+			SenderAvailable:  true,
+			ScannerAvailable: true,
 			SenderPathPrefix: `/qr/`,
 			WasmURL:          `/qrstream.wasm`,
 			ActionLabel:      `QR codes`,
 			ActionClass:      `qr-transfer`,
 			ActionIconID:     `action-icon-qr`,
+			DirActionIconID:  `action-icon-qr-archive`,
 			Scanner:          qrScannerBackend(browserLogging),
 		},
-		// JAB remains unavailable until its sender, worker, wasm, and
-		// module dependency are present together.
+		// The JAB sender endpoint and encoder are complete; the
+		// in-browser scanner stays unavailable until its worker and
+		// wasm module ship, so no jab worker or wasm value may reach
+		// the page.
 		{
 			ID:               `jab`,
-			Available:        false,
+			SenderAvailable:  true,
+			ScannerAvailable: false,
 			SenderPathPrefix: `/jab/`,
 			WasmURL:          `/jabstream.wasm`,
 			ActionLabel:      `JAB Code`,
 			ActionClass:      `jab-transfer`,
+			ActionIconID:     `action-icon-jab`,
+			DirActionIconID:  `action-icon-jab-archive`,
 			Scanner:          jabScannerBackend(browserLogging),
 		},
 	}
@@ -798,27 +882,36 @@ func configuredTransferBackends(browserLogging bool) []transferBackend {
 
 func selectedScanner(backends []transferBackend) (scannerBackend, bool) {
 	for _, backend := range backends {
-		if backend.Available {
+		if backend.ScannerAvailable {
 			return backend.Scanner, true
 		}
 	}
 	return scannerBackend{}, false
 }
 
-func transferActions(backends []transferBackend, name, path string) []pageAction {
+// transferActions builds the per-entry sender actions. A directory
+// action transfers the entry as a compressed Unix archive and gets a
+// combined icon so it is not mistaken for a plain file transfer.
+func transferActions(backends []transferBackend, name, path string, directory bool) []pageAction {
 	actions := make([]pageAction, 0, len(backends))
 	for _, backend := range backends {
-		if !backend.Available {
+		if !backend.SenderAvailable {
 			continue
 		}
-		actions = append(actions, pageAction{
+		action := pageAction{
 			BackendID:      backend.ID,
 			CSSClass:       backend.ActionClass,
 			Href:           (&url.URL{Path: backend.SenderPathPrefix + path}).EscapedPath(),
 			Title:          `transfer via ` + backend.ActionLabel,
 			AccessibleName: `transfer ` + name + ` via ` + backend.ActionLabel,
 			IconID:         backend.ActionIconID,
-		})
+		}
+		if directory {
+			action.Title = `transfer as compressed archive via ` + backend.ActionLabel
+			action.AccessibleName = `transfer ` + name + ` as a compressed archive via ` + backend.ActionLabel
+			action.IconID = backend.DirActionIconID
+		}
+		actions = append(actions, action)
 	}
 	return actions
 }
@@ -827,6 +920,7 @@ type pageData struct {
 	Files          []pageEntry
 	Backends       []transferBackend
 	ArchiveURL     string
+	DirActions     []pageAction
 	UploadURL      string
 	QRURL          string
 	Scanner        scannerBackend
@@ -863,10 +957,11 @@ func (s *server) renderDirectory(w io.Writer, req *http.Request, directory fileb
 			} else {
 				entry.Href = file.Href
 				entry.ArchiveHref = archiveURL(file.Path)
+				entry.Actions = transferActions(backends, file.Name, file.Path, true)
 			}
 		case file.IsRegular():
 			entry.Href = file.Href
-			entry.Actions = transferActions(backends, file.Name, file.Path)
+			entry.Actions = transferActions(backends, file.Name, file.Path, false)
 		default:
 			entry.Note = `special file not served`
 		}
@@ -880,10 +975,15 @@ func (s *server) renderDirectory(w io.Writer, req *http.Request, directory fileb
 		}
 	}
 	qrURL := `/qrurl?` + url.Values{`path`: {req.URL.Path}}.Encode()
+	currentName := directory.Name
+	if currentName == `.` {
+		currentName = `this directory`
+	}
 	data := pageData{
 		Files:          entries,
 		Backends:       backends,
 		ArchiveURL:     archiveURL(directory.Name),
+		DirActions:     transferActions(backends, currentName, directory.Name, true),
 		UploadURL:      uploadURL,
 		QRURL:          qrURL,
 		Scanner:        scanner,

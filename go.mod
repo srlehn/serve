@@ -11,6 +11,6 @@ require (
 )
 
 require (
-	github.com/srlehn/jabcode v0.0.0-20260719012542-444ae4ad7789
+	github.com/srlehn/jabcode v0.0.0-20260719074441-bd4ea0015f1e
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 )

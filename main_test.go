@@ -2,8 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"image"
+	"image/png"
 	"io"
 	"log"
+	"mime"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -545,7 +549,7 @@ func TestDirectoryListingUsesFileTypeIconSprite(t *testing.T) {
 	if !strings.Contains(body, `class="file-type-icon" viewBox="0 0 16 16" width="16" height="16"`) {
 		t.Error("file type icons do not have intrinsic dimensions")
 	}
-	if !strings.Contains(body, `class="qr-transfer"`) ||
+	if !strings.Contains(body, `class="barcode-transfer qr-transfer"`) ||
 		!strings.Contains(body, `<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">`) {
 		t.Error("QR transfer icons do not have intrinsic dimensions")
 	}
@@ -761,14 +765,16 @@ func TestConfiguredTransferBackends(t *testing.T) {
 		t.Fatalf("configured backends = %d, want 2", len(backends))
 	}
 	qr := backends[0]
-	if !qr.Available || qr.ID != `qr` || qr.SenderPathPrefix != `/qr/` ||
-		qr.WasmURL != `/qrstream.wasm` || qr.Scanner != qrScannerBackend(false) {
+	if !qr.SenderAvailable || !qr.ScannerAvailable || qr.ID != `qr` ||
+		qr.SenderPathPrefix != `/qr/` || qr.WasmURL != `/qrstream.wasm` ||
+		qr.Scanner != qrScannerBackend(false) {
 		t.Fatalf("QR backend = %#v", qr)
 	}
 	jab := backends[1]
-	if jab.Available || jab.ID != `jab` || jab.SenderPathPrefix != `/jab/` ||
-		jab.WasmURL != `/jabstream.wasm` || jab.Scanner != jabScannerBackend(false) {
-		t.Fatalf("disabled JAB backend = %#v", jab)
+	if !jab.SenderAvailable || jab.ScannerAvailable || jab.ID != `jab` ||
+		jab.SenderPathPrefix != `/jab/` || jab.WasmURL != `/jabstream.wasm` ||
+		jab.Scanner != jabScannerBackend(false) {
+		t.Fatalf("JAB backend = %#v", jab)
 	}
 	if jab.Scanner.WorkerURL != `/jabworker.js` {
 		t.Fatalf("JAB worker URL = %q", jab.Scanner.WorkerURL)
@@ -779,17 +785,20 @@ func TestConfiguredTransferBackends(t *testing.T) {
 		t.Fatalf("selected scanner = %#v, available = %t", scanner, ok)
 	}
 	for i := range backends {
-		backends[i].Available = false
+		backends[i].ScannerAvailable = false
 	}
 	if scanner, ok := selectedScanner(backends); ok {
 		t.Fatalf("selected unavailable scanner %#v", scanner)
 	}
 }
 
-func TestUnavailableJABBackendIsNotRendered(t *testing.T) {
+func TestTransferActionsRendered(t *testing.T) {
 	srv, dir := testServer(t)
 	name := `a & b.txt`
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(`content`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, `sub dir`), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -799,28 +808,52 @@ func TestUnavailableJABBackendIsNotRendered(t *testing.T) {
 		t.Fatalf("page status = %d, body %q", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	wantHref := (&url.URL{Path: `/qr/` + name}).EscapedPath()
-	wantHref = strings.ReplaceAll(wantHref, `&`, `&amp;`)
+	escaped := func(prefix, path string) string {
+		href := (&url.URL{Path: prefix + path}).EscapedPath()
+		return strings.ReplaceAll(href, `&`, `&amp;`)
+	}
 	for _, want := range []string{
-		`class="qr-transfer"`,
+		// file actions for both senders
+		`class="barcode-transfer qr-transfer"`,
+		`class="barcode-transfer jab-transfer"`,
 		`data-transport-id="qr"`,
-		`href="` + wantHref + `"`,
+		`data-transport-id="jab"`,
+		`href="` + escaped(`/qr/`, name) + `"`,
+		`href="` + escaped(`/jab/`, name) + `"`,
 		`aria-label="transfer a &amp; b.txt via QR codes"`,
+		`aria-label="transfer a &amp; b.txt via JAB Code"`,
+		// directory archive stream actions with combined icons
+		`href="` + escaped(`/qr/`, `sub dir`) + `"`,
+		`href="` + escaped(`/jab/`, `sub dir`) + `"`,
+		`aria-label="transfer sub dir as a compressed archive via QR codes"`,
+		`aria-label="transfer sub dir as a compressed archive via JAB Code"`,
+		`href="#action-icon-qr-archive"`,
+		`href="#action-icon-jab-archive"`,
+		// current-directory stream actions beside the archive control
+		`href="/qr/."`,
+		`href="/jab/."`,
+		`aria-label="transfer this directory as a compressed archive via QR codes"`,
+		`aria-label="transfer this directory as a compressed archive via JAB Code"`,
+		// shared dialog handling
+		`document.querySelectorAll('.barcode-transfer')`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page does not contain %q", want)
 		}
 	}
+	// the JAB scanner is not shipped: no worker or wasm value may
+	// reach the page, and the scanner stays QR
 	for _, unavailable := range []string{
-		`data-transport-id="jab"`,
-		`/jab/`,
 		`/jabworker.js`,
 		`/jabstream.wasm`,
-		`JAB Code`,
+		`data-scanner-id="jab"`,
 	} {
 		if strings.Contains(body, unavailable) {
-			t.Errorf("page exposes unavailable backend value %q", unavailable)
+			t.Errorf("page exposes unavailable scanner value %q", unavailable)
 		}
+	}
+	if !strings.Contains(body, `data-scanner-id="qr"`) {
+		t.Error("page does not select the QR scanner")
 	}
 }
 
@@ -913,7 +946,7 @@ func TestQRRejectsOversizedFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Truncate(maxQRFileSize + 1); err != nil {
+	if err := f.Truncate(maxBarcodeFileSize + 1); err != nil {
 		f.Close()
 		t.Fatal(err)
 	}
@@ -1000,5 +1033,127 @@ func TestHostLabel(t *testing.T) {
 		if got := hostLabel(tt.candidate); got != tt.want {
 			t.Errorf("hostLabel(%#v) = %q, want %q", tt.candidate, got, tt.want)
 		}
+	}
+}
+
+// flushCancelWriter cancels the request context on the first flush,
+// so a streaming handler emits exactly one frame and then observes a
+// client disconnect.
+type flushCancelWriter struct {
+	*httptest.ResponseRecorder
+	cancel context.CancelFunc
+}
+
+func (w *flushCancelWriter) Flush() {
+	w.ResponseRecorder.Flush()
+	w.cancel()
+}
+
+// barcodeStreamFirstFrame drives a barcode sender until its first
+// flushed frame, cancels the request as a disconnecting client
+// would, and decodes the emitted multipart PNG part.
+func barcodeStreamFirstFrame(t *testing.T, srv *server, handler func(http.ResponseWriter, *http.Request), target string) image.Config {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, target, nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	handler(&flushCancelWriter{ResponseRecorder: rec, cancel: cancel}, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stream status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	mediaType, params, err := mime.ParseMediaType(rec.Header().Get(`Content-Type`))
+	if err != nil || mediaType != `multipart/x-mixed-replace` {
+		t.Fatalf("stream content type = %q (%v)", rec.Header().Get(`Content-Type`), err)
+	}
+	reader := multipart.NewReader(rec.Body, params[`boundary`])
+	part, err := reader.NextPart()
+	if err != nil {
+		t.Fatalf("no multipart frame: %v", err)
+	}
+	if part.Header.Get(`Content-Type`) != `image/png` {
+		t.Fatalf("frame content type = %q", part.Header.Get(`Content-Type`))
+	}
+	config, err := png.DecodeConfig(part)
+	if err != nil {
+		t.Fatalf("frame is not a PNG: %v", err)
+	}
+	return config
+}
+
+func TestJABSenderStreamsFileAndDirectory(t *testing.T) {
+	srv, dir := testServer(t)
+	if err := os.WriteFile(filepath.Join(dir, `payload.bin`), []byte(`jab payload`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, `tree`, `nested`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, `tree`, `nested`, `f.txt`), []byte(`in archive`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// the default plan is fixed: version 20 is a 97-module square at
+	// 8 px per module with a 2-module margin on each side
+	const wantSize = (97 + 2*2) * 8
+	for _, target := range []string{`/jab/payload.bin`, `/jab/tree`, `/jab/.`} {
+		config := barcodeStreamFirstFrame(t, srv, srv.jab, target)
+		if config.Width != wantSize || config.Height != wantSize {
+			t.Fatalf("%s frame = %dx%d, want %dx%d", target, config.Width, config.Height, wantSize, wantSize)
+		}
+	}
+}
+
+func TestQRSenderStreamsDirectoryArchive(t *testing.T) {
+	srv, dir := testServer(t)
+	if err := os.Mkdir(filepath.Join(dir, `tree`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, `tree`, `f.txt`), []byte(`in archive`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if config := barcodeStreamFirstFrame(t, srv, srv.qr, `/qr/tree`); config.Width != config.Height || config.Width == 0 {
+		t.Fatalf("QR archive frame = %dx%d", config.Width, config.Height)
+	}
+}
+
+func TestJABSenderMethodAndPathFailures(t *testing.T) {
+	srv, dir := testServer(t)
+	if err := os.Symlink(`.`, filepath.Join(dir, `linked-dir`)); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.jab(rec, httptest.NewRequest(http.MethodPost, `/jab/file`, nil))
+	if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get(`Allow`) != http.MethodGet {
+		t.Fatalf("wrong-method response = %d Allow=%q", rec.Code, rec.Header().Get(`Allow`))
+	}
+
+	for _, target := range []string{`/jab/`, `/jab/missing`, `/jab/../escape`, `/jab/linked-dir`} {
+		rec := httptest.NewRecorder()
+		srv.jab(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s status = %d, want 404", target, rec.Code)
+		}
+	}
+}
+
+func TestJABRejectsOversizedFile(t *testing.T) {
+	srv, dir := testServer(t)
+	f, err := os.Create(filepath.Join(dir, `large.bin`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxBarcodeFileSize + 1); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	srv.jab(rec, httptest.NewRequest(http.MethodGet, `/jab/large.bin`, nil))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized JAB status = %d, want 413", rec.Code)
 	}
 }

@@ -52,13 +52,27 @@
         <symbol id="action-icon-qr" viewBox="0 0 16 16">
             <path fill="currentColor" fill-rule="evenodd" d="M0 0h7v7H0zm1 1v5h5V1zm1 1h3v3H2zM9 0h7v7H9zm1 1v5h5V1zm1 1h3v3h-3zM0 9h7v7H0zm1 1v5h5v-5zm1 1h3v3H2zM9 9h2v2H9zm4 0h3v3h-3zm-4 4h3v3H9zm5 1h2v2h-2z"/>
         </symbol>
+        <symbol id="action-icon-jab" viewBox="0 0 16 16">
+            <path fill="currentColor" d="M0 0h4v4H0zm8 0h4v4H8zM4 4h4v4H4zm8 0h4v4h-4zM0 8h4v4H0zm8 0h4v4H8zM4 12h4v4H4zm8 0h4v4h-4z"/>
+        </symbol>
+        <symbol id="action-icon-qr-archive" viewBox="0 0 16 16">
+            <path fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" d="M1.5 3.5h5l1.5 2h6.5v8h-13z"/>
+            <path fill="currentColor" d="M4.5 7.5h2v2h-2zm5 0h2v2h-2zm-5 3.5h2v2h-2zm5 .5h2v1.5h-2z"/>
+        </symbol>
+        <symbol id="action-icon-jab-archive" viewBox="0 0 16 16">
+            <path fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" d="M1.5 3.5h5l1.5 2h6.5v8h-13z"/>
+            <path fill="currentColor" d="M4.5 7.5h2v2h-2zm5 0h2v2h-2zM7 10h2v2H7zm-2.5 1.5h2v2h-2zm5 0h2v2h-2z"/>
+        </symbol>
     </svg>
     <div class="split left">
         <span class="listing-title"><b>Files:</b> <a class="file-action archive-download" href="{{.ArchiveURL}}"
             title="download this directory as a compressed Unix archive" aria-label="download this directory as a compressed Unix archive"><svg
-            viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#action-icon-archive"/></svg></a></span><br>
+            viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#action-icon-archive"/></svg></a>{{range .DirActions}} <a
+            class="barcode-transfer {{.CSSClass}}" data-transport-id="{{.BackendID}}" href="{{.Href}}" title="{{.Title}}"
+            aria-label="{{.AccessibleName}}"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use
+            href="#{{.IconID}}"/></svg></a>{{end}}</span><br>
         <p id="archiveStatus" class="archive-status" role="status" aria-live="polite" hidden></p>
-        {{range .Files}}<span class="file-name"><svg class="file-type-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#file-icon-{{.Icon}}"/></svg>{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</span>{{if .ArchiveHref}} <a class="file-action archive-download" href="{{.ArchiveHref}}" title="download directory as a compressed Unix archive" aria-label="download {{.Name}} as a compressed Unix archive"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#action-icon-archive"/></svg></a>{{end}}{{range .Actions}} <a class="{{.CSSClass}}" data-transport-id="{{.BackendID}}" href="{{.Href}}" title="{{.Title}}" aria-label="{{.AccessibleName}}"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><use href="#{{.IconID}}"/></svg></a>{{end}}{{if .Note}} <small>({{.Note}})</small>{{end}}<br>
+        {{range .Files}}<span class="file-name"><svg class="file-type-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#file-icon-{{.Icon}}"/></svg>{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</span>{{if .ArchiveHref}} <a class="file-action archive-download" href="{{.ArchiveHref}}" title="download directory as a compressed Unix archive" aria-label="download {{.Name}} as a compressed Unix archive"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#action-icon-archive"/></svg></a>{{end}}{{range .Actions}} <a class="barcode-transfer {{.CSSClass}}" data-transport-id="{{.BackendID}}" href="{{.Href}}" title="{{.Title}}" aria-label="{{.AccessibleName}}"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><use href="#{{.IconID}}"/></svg></a>{{end}}{{if .Note}} <small>({{.Note}})</small>{{end}}<br>
         {{end}}
     </div>
     <div class="split right">
@@ -270,11 +284,12 @@
     const qrDialog = document.querySelector('.qr-dialog');
     const stream = qrDialog.querySelector('img');
     const caption = qrDialog.querySelector('p');
-    for (const link of document.querySelectorAll('.qr-transfer')) {
+    for (const link of document.querySelectorAll('.barcode-transfer')) {
         link.addEventListener('click', e => {
             e.preventDefault();
             stream.src = link.getAttribute('href');
-            caption.textContent = decodeURIComponent(link.pathname.split('/').pop());
+            const leaf = decodeURIComponent(link.pathname.split('/').pop());
+            caption.textContent = leaf === '.' ? 'this directory' : leaf;
             qrDialog.showModal();
         });
     }

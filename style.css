@@ -92,7 +92,7 @@ a {
 }
 
 .file-action,
-.qr-transfer {
+.barcode-transfer {
     color: inherit;
     display: inline-block;
     width: 1em;
@@ -101,14 +101,14 @@ a {
 }
 
 .file-action svg,
-.qr-transfer svg {
+.barcode-transfer svg {
     display: block;
     width: 100%;
     height: 100%;
 }
 
 .file-action:focus-visible,
-.qr-transfer:focus-visible {
+.barcode-transfer:focus-visible {
     outline: 2px solid var(--link);
     outline-offset: 2px;
 }
