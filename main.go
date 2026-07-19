@@ -825,6 +825,12 @@ type scannerBackend struct {
 	DialogTitle   string
 	IdlePrompt    string
 	TransferLabel string
+	// BurstFrames is how many camera frames the page captures in
+	// quick succession before decoding them as one sequence. A
+	// decoder that accumulates evidence across frames of one symbol
+	// (jabcode Stream) needs several captures of the same displayed
+	// frame; a single-shot decoder wants 1.
+	BurstFrames int
 }
 
 func qrScannerBackend(browserLogging bool) scannerBackend {
@@ -838,6 +844,7 @@ func qrScannerBackend(browserLogging bool) scannerBackend {
 		DialogTitle:   `receive QR stream`,
 		IdlePrompt:    `point the camera at the QR codes`,
 		TransferLabel: `QR`,
+		BurstFrames:   1,
 	}
 }
 
@@ -852,6 +859,7 @@ func jabScannerBackend(browserLogging bool) scannerBackend {
 		DialogTitle:   `receive JAB Code stream`,
 		IdlePrompt:    `point the camera at the JAB Code stream`,
 		TransferLabel: `JAB Code`,
+		BurstFrames:   4,
 	}
 }
 

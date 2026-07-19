@@ -115,6 +115,7 @@
     <button class="camera-open" type="button" data-https-url="{{.HTTPSURL}}"
         data-scanner-id="{{.Scanner.ID}}" data-worker-url="{{.Scanner.WorkerURL}}"
         data-idle-prompt="{{.Scanner.IdlePrompt}}" data-transfer-label="{{.Scanner.TransferLabel}}"
+        data-burst-frames="{{.Scanner.BurstFrames}}"
         title="receive a file by scanning a {{.Scanner.TransferLabel}} stream with this device's camera"
         aria-label="open {{.Scanner.TransferLabel}} scanner"><svg
         viewBox="0 0 16 16" width="48" height="48" aria-hidden="true"><path fill="currentColor" d="M1 1h4v2H3v2H1zM11 1h4v4h-2V3h-2zM1 11h2v2h2v2H1zM11 15v-2h2v-2h2v4z"/><circle cx="8" cy="8" r="2.5" fill="currentColor"/></svg></button>
@@ -129,7 +130,8 @@
                 {{if gt (len .Scanners) 1}}<select class="scanner-select" title="scanner symbology"
                     aria-label="scanner symbology">{{range .Scanners}}
                     <option value="{{.ID}}" data-worker-url="{{.WorkerURL}}" data-dialog-title="{{.DialogTitle}}"
-                        data-idle-prompt="{{.IdlePrompt}}" data-transfer-label="{{.TransferLabel}}">{{.TransferLabel}}</option>{{end}}
+                        data-idle-prompt="{{.IdlePrompt}}" data-transfer-label="{{.TransferLabel}}"
+                        data-burst-frames="{{.BurstFrames}}">{{.TransferLabel}}</option>{{end}}
                 </select>{{end}}
                 <button class="close" type="button" title="close" aria-label="close scanner">&times;</button>
             </header>
@@ -336,6 +338,7 @@
         workerURL: cameraButton.dataset.workerUrl,
         idlePrompt: cameraButton.dataset.idlePrompt,
         transferLabel: cameraButton.dataset.transferLabel,
+        burstFrames: Math.max(1, Number(cameraButton.dataset.burstFrames) || 1),
     });
     const camDialog = document.querySelector('.camera-dialog');
     const scannerSelect = camDialog.querySelector('.scanner-select');
@@ -419,6 +422,7 @@
     function decoderFailed(message) {
         qlog('scanner stopped ' + message);
         scanning = false;
+        dropBurst();
         stopDecoder();
         resetFrameProgress();
         camProgress.textContent = message;
@@ -454,7 +458,23 @@
         });
         return true;
     }
+    /* burst capture: the jab Stream decoder accumulates evidence
+       across several looks at the SAME displayed symbol, but one
+       decode takes longer than the sender shows a frame. So a burst
+       of frames is grabbed in quick succession (spanning about one
+       display period) and fed to the decoder in sequence; the whole
+       burst is dropped when its time budget runs out or one of its
+       frames decodes. Single-shot decoders use bursts of 1. */
+    const burstBudgetMillis = 5000;
+    let burst = [];       // captured frames waiting for the worker
+    let burstCapture = 0; // frames still to capture for this burst
+    let burstStarted = 0;
+    function dropBurst() {
+        burst = [];
+        burstCapture = 0;
+    }
     function restartDecoder() {
+        dropBurst();
         stopDecoder();
         camProgress.textContent = 'restarting decoder';
         if (!loadDecoder()) return;
@@ -472,6 +492,7 @@
             workerURL: option.dataset.workerUrl,
             idlePrompt: option.dataset.idlePrompt,
             transferLabel: option.dataset.transferLabel,
+            burstFrames: Math.max(1, Number(option.dataset.burstFrames) || 1),
         });
         cameraTitle.textContent = option.dataset.dialogTitle;
         frameProgress.setAttribute('aria-label',
@@ -483,6 +504,9 @@
     });
     function scanResult(result) {
         if (!result) return;
+        /* any recognized frame means the burst did its job; the
+           remaining captures show the same symbol */
+        dropBurst();
         if (result.error) {
             qlog('scanner error ' + result.error);
             if (result.recoverable) {
@@ -633,36 +657,52 @@
         openingCamera = false;
         cameraButton.disabled = false;
         clearInterval(scanTimer);
-        scanTimer = setInterval(() => {
-            /* one frame in flight at a time: the worker's decode
-               speed sets the pace, the preview never freezes */
-            if (!scanning || scanBusy || !video.videoWidth) return;
+        function captureFrame() {
             /* downscale: full camera resolution costs decode time
-               without helping screen-displayed codes */
-            let img;
+               without helping screen-displayed codes. The center
+               crop covers the zoom the hardware did not do. */
+            const sw = video.videoWidth / cropZoom;
+            const sh = video.videoHeight / cropZoom;
+            const sx = (video.videoWidth - sw) / 2;
+            const sy = (video.videoHeight - sh) / 2;
+            const scale = Math.min(1, 1024 / sw);
+            canvas.width = Math.round(sw * scale);
+            canvas.height = Math.round(sh * scale);
+            ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+            return ctx.getImageData(0, 0, canvas.width, canvas.height);
+        }
+        scanTimer = setInterval(() => {
+            if (!scanning || !video.videoWidth) return;
             try {
-                /* center crop covers the zoom the hardware did not */
-                const sw = video.videoWidth / cropZoom;
-                const sh = video.videoHeight / cropZoom;
-                const sx = (video.videoWidth - sw) / 2;
-                const sy = (video.videoHeight - sh) / 2;
-                const scale = Math.min(1, 1024 / sw);
-                canvas.width = Math.round(sw * scale);
-                canvas.height = Math.round(sh * scale);
-                ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-                img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            } catch (err) {
-                decoderFailed('camera frame failed: ' + err.message);
-                return;
-            }
-            if (!scanWorker) return;
-            scanBusy = true;
-            try {
+                /* capture phase: grab the whole burst at tick pace
+                   regardless of the decoder, so its frames lie close
+                   together in time */
+                if (burstCapture > 0) {
+                    burst.push(captureFrame());
+                    burstCapture--;
+                    return;
+                }
+                if (scanBusy) return;
+                if (burst.length && performance.now() - burstStarted > burstBudgetMillis) {
+                    qlog('burst dropped after budget');
+                    dropBurst();
+                }
+                if (!burst.length) {
+                    /* start the next burst; the first frame is
+                       captured on this tick */
+                    burstStarted = performance.now();
+                    burstCapture = scannerBackend.burstFrames - 1;
+                    burst.push(captureFrame());
+                    if (burstCapture > 0) return;
+                }
+                const img = burst.shift();
+                if (!scanWorker) return;
+                scanBusy = true;
                 scanWorker.postMessage(
                     { width: img.width, height: img.height, buffer: img.data.buffer },
                     [img.data.buffer]);
             } catch (err) {
-                decoderFailed('decoder stopped: ' + err.message);
+                decoderFailed('camera frame failed: ' + err.message);
             }
         }, 100);
     }

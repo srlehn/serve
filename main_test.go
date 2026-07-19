@@ -768,6 +768,7 @@ func TestQRScannerBackendDescriptor(t *testing.T) {
 		DialogTitle:   `receive QR stream`,
 		IdlePrompt:    `point the camera at the QR codes`,
 		TransferLabel: `QR`,
+		BurstFrames:   1,
 	}
 	if got := qrScannerBackend(false); got != want {
 		t.Fatalf("QR scanner descriptor = %#v, want %#v", got, want)
