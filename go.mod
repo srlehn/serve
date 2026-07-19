@@ -10,4 +10,7 @@ require (
 	golang.org/x/text v0.38.0
 )
 
-require golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
+require (
+	github.com/srlehn/jabcode v0.0.0-20260719012542-444ae4ad7789
+	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
+)
