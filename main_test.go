@@ -15,9 +15,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/srlehn/serve/jabstream"
 )
 
 func testServerWithOptions(t *testing.T, logger *log.Logger, browserLogging bool, uploadLimit int64) (*server, string) {
@@ -1155,5 +1159,41 @@ func TestJABRejectsOversizedFile(t *testing.T) {
 	srv.jab(rec, httptest.NewRequest(http.MethodGet, `/jab/large.bin`, nil))
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized JAB status = %d, want 413", rec.Code)
+	}
+}
+
+func TestJABSenderColorSelection(t *testing.T) {
+	srv, dir := testServer(t)
+	if err := os.WriteFile(filepath.Join(dir, `f.bin`), []byte(`payload`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{
+		`/jab/f.bin?colors=7`,
+		`/jab/f.bin?colors=abc`,
+		`/jab/f.bin?colors=64`,
+		`/jab/f.bin?colors=-8`,
+	} {
+		rec := httptest.NewRecorder()
+		srv.jab(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s status = %d, want 400", target, rec.Code)
+		}
+	}
+	// one accepted value proves the parameter reaches the encoder;
+	// per-mode encode and decode behavior belongs to the libraries.
+	// 4 colors keeps the frame cheap and the geometry fixed.
+	const wantSize = (97 + 2*2) * 8
+	if config := barcodeStreamFirstFrame(t, srv, srv.jab, `/jab/f.bin?colors=4`); config.Width != wantSize || config.Height != wantSize {
+		t.Errorf("4 colors frame = %dx%d, want %dx%d", config.Width, config.Height, wantSize, wantSize)
+	}
+	for _, colors := range []int{16, 32, 64, 128, 256} {
+		if slices.Contains(jabstream.SupportedColors(), colors) {
+			continue
+		}
+		rec := httptest.NewRecorder()
+		srv.jab(rec, httptest.NewRequest(http.MethodGet, `/jab/f.bin?colors=`+strconv.Itoa(colors), nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("unsupported %d colors status = %d, want 400", colors, rec.Code)
+		}
 	}
 }

@@ -52,16 +52,37 @@
         <symbol id="action-icon-qr" viewBox="0 0 16 16">
             <path fill="currentColor" fill-rule="evenodd" d="M0 0h7v7H0zm1 1v5h5V1zm1 1h3v3H2zM9 0h7v7H9zm1 1v5h5V1zm1 1h3v3h-3zM0 9h7v7H0zm1 1v5h5v-5zm1 1h3v3H2zM9 9h2v2H9zm4 0h3v3h-3zm-4 4h3v3H9zm5 1h2v2h-2z"/>
         </symbol>
+        <!-- mini JAB Code after ISO/IEC 23634 figure D.1: an 8-color
+             module mosaic with concentric corner finder patterns;
+             fixed palette colors, deliberately not currentColor -->
         <symbol id="action-icon-jab" viewBox="0 0 16 16">
-            <path fill="currentColor" d="M0 0h4v4H0zm8 0h4v4H8zM4 4h4v4H4zm8 0h4v4h-4zM0 8h4v4H0zm8 0h4v4H8zM4 12h4v4H4zm8 0h4v4h-4z"/>
+            <path fill="#000" d="M0 0h4v4H0zm12 0h4v4h-4zM0 12h4v4H0zm12 0h4v4h-4zM12 8h4v4h-4zM4 12h4v4H4z"/>
+            <path fill="#ffe000" d="M1 1h2v2H1zM4 8h4v4H4zM13 9h2v2h-2z"/>
+            <path fill="#e000e0" d="M13 1h2v2h-2zM4 4h4v4H4z"/>
+            <path fill="#00d0d0" d="M1 13h2v2H1zM8 4h4v4H8z"/>
+            <path fill="#00b000" d="M13 13h2v2h-2zM4 0h4v4H4zM8 8h4v4H8z"/>
+            <path fill="#e00000" d="M8 0h4v4H8zM0 8h4v4H0zM5 13h2v2H5z"/>
+            <path fill="#0000e0" d="M0 4h4v4H0zM8 12h4v4H8z"/>
+            <path fill="#f8f8f8" d="M12 4h4v4h-4z"/>
         </symbol>
         <symbol id="action-icon-qr-archive" viewBox="0 0 16 16">
             <path fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" d="M1.5 3.5h5l1.5 2h6.5v8h-13z"/>
-            <path fill="currentColor" d="M4.5 7.5h2v2h-2zm5 0h2v2h-2zm-5 3.5h2v2h-2zm5 .5h2v1.5h-2z"/>
+            <!-- mini QR inside the folder: one nested finder square
+                 plus data dots -->
+            <path fill="currentColor" fill-rule="evenodd" d="M3.5 7H8v4.5H3.5zm1 1v2.5H7V8zm.75.75h1v1h-1z"/>
+            <path fill="currentColor" d="M9 7h1.5v1.5H9zM11.5 7.5h1v1h-1zM11 9.25h1.5v1.5H11zM9 9.75h1.5v1.5H9zM11.75 11.5h.75v.75h-.75z"/>
         </symbol>
         <symbol id="action-icon-jab-archive" viewBox="0 0 16 16">
             <path fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" d="M1.5 3.5h5l1.5 2h6.5v8h-13z"/>
-            <path fill="currentColor" d="M4.5 7.5h2v2h-2zm5 0h2v2h-2zM7 10h2v2H7zm-2.5 1.5h2v2h-2zm5 0h2v2h-2z"/>
+            <!-- mini JAB mosaic inside the folder: palette-colored
+                 modules with black finder corners -->
+            <path fill="#000" d="M3.5 7h2.25v2.25H3.5zM10.25 9.25h2.25v2.25h-2.25z"/>
+            <path fill="#ffe000" d="M4.06 7.56h1.13v1.13H4.06zM8 9.25h2.25v2.25H8z"/>
+            <path fill="#e00000" d="M5.75 7H8v2.25H5.75z"/>
+            <path fill="#00d0d0" d="M8 7h2.25v2.25H8zM10.81 9.81h1.13v1.13h-1.13z"/>
+            <path fill="#00b000" d="M10.25 7h2.25v2.25h-2.25z"/>
+            <path fill="#0000e0" d="M5.75 9.25H8v2.25H5.75z"/>
+            <path fill="#e000e0" d="M3.5 9.25h2.25v2.25H3.5z"/>
         </symbol>
     </svg>
     <div class="split left">
@@ -562,9 +583,10 @@
         }, 100);
     }
     cameraButton.addEventListener('click', openCamera);
-    /* explicit close only - no backdrop-tap close, which stray
-       touches kept triggering while holding the phone to scan */
     camDialog.querySelector('.close').addEventListener('click', () => camDialog.close());
+    /* tap on the backdrop (the dialog element itself) closes, like
+       the sender dialog; Esc is built in */
+    camDialog.addEventListener('click', e => { if (e.target === camDialog) camDialog.close(); });
     saveButton.addEventListener('click', saveReceived);
     restartButton.addEventListener('click', restartDecoder);
     /* a tap on the preview re-fires the save sheet for the pending

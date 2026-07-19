@@ -14,6 +14,14 @@ GO ?= go
 # built with the same -trimpath/-s/-w in wasm/generate.go.
 GOFLAGS_RELEASE := -trimpath -ldflags='-s -w'
 
+# Optional jabcode capabilities compiled into serve. The
+# jabcode_non_iso_encode tag enables the experimental 16- and
+# 32-color JAB sender modes (camera-marginal at 32; the untagged
+# build stops at the 8-color ISO modes); jabcode_high_color is its
+# decoder-side twin, needed by anything that reads high-color
+# symbols (the future JAB wasm scanner module).
+GOTAGS ?= jabcode_non_iso_encode,jabcode_high_color
+
 WASM      := wasm/qrstream.wasm
 WASM_EXEC := wasm/wasm_exec.js
 # the wasm embeds the shim and the whole qrstream package (minus tests)
@@ -39,14 +47,14 @@ $(WASM) $(WASM_EXEC) &: $(WASM_SRC)
 # (e.g. vendored deps or a toolchain switch).
 build:
 	$(GO) generate
-	CGO_ENABLED=0 $(GO) build $(GOFLAGS_RELEASE) -o serve .
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS_RELEASE) -tags '$(GOTAGS)' -o serve .
 
 run: $(WASM_EXEC)
-	$(GO) run .
+	$(GO) run -tags '$(GOTAGS)' .
 
 test: $(WASM_EXEC)
-	$(GO) vet ./...
-	$(GO) test ./...
+	$(GO) vet -tags '$(GOTAGS)' ./...
+	$(GO) test -tags '$(GOTAGS)' ./...
 
 clean:
 	rm -f -- serve $(WASM) $(WASM_EXEC)

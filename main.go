@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -746,11 +747,25 @@ func (s *server) qr(w http.ResponseWriter, req *http.Request) {
 
 // jab serves the file or directory archive named after /jab/ as an
 // endless loop of JAB Code symbols, the higher-density color peer of
-// the QR sender with the same per-request guarantees.
+// the QR sender with the same per-request guarantees. An optional
+// colors query selects the module color count from the modes this
+// build supports (16 and 32 are experimental high-color profiles;
+// on camera captures 16 reads reliably and 32 marginally).
 func (s *server) jab(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {
 		methodNotAllowed(w, http.MethodGet)
 		return
+	}
+	var plan jabstream.Plan
+	if value := req.URL.Query().Get(`colors`); value != `` {
+		colors, err := strconv.Atoi(value)
+		if err != nil || !slices.Contains(jabstream.SupportedColors(), colors) {
+			supported := fmt.Sprint(jabstream.SupportedColors())
+			s.requestError(w, req, http.StatusBadRequest,
+				`unsupported color count; this build supports `+supported, err)
+			return
+		}
+		plan.Colors = colors
 	}
 	source, ok := s.barcodeSource(w, req, `/jab/`)
 	if !ok {
@@ -760,7 +775,7 @@ func (s *server) jab(w http.ResponseWriter, req *http.Request) {
 	if !ok {
 		return
 	}
-	st, err := jabstream.Encode(source.Filename(), data, &jabstream.Options{Fountain: true})
+	st, err := jabstream.Encode(source.Filename(), data, &jabstream.Options{Plan: plan, Fountain: true})
 	if err != nil {
 		s.requestError(w, req, http.StatusInternalServerError, `could not encode JAB Code stream`, err)
 		return

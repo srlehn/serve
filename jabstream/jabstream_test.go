@@ -24,8 +24,8 @@ func TestCapacity(t *testing.T) {
 		{Plan{Colors: 8, Version: 8}, 466},
 		{Plan{Colors: 4, Version: 1}, 39},
 		{Plan{}, 0},                       // no defaults outside Encode
-		{Plan{Colors: 3, Version: 20}, 0}, // unsupported color count
-		{Plan{Colors: 16, Version: 20}, 0},
+		{Plan{Colors: 3, Version: 20}, 0}, // not a supported color count in any build
+		{Plan{Colors: 5, Version: 20}, 0},
 		{Plan{Colors: 8, Version: 33}, 0},
 		{Plan{Colors: 8, Version: -1}, 0},
 	} {
@@ -248,7 +248,7 @@ func TestOptionValidation(t *testing.T) {
 		opt  Options
 	}{
 		{`three colors`, Options{Plan: Plan{Colors: 3, Version: 8}}},
-		{`sixteen colors`, Options{Plan: Plan{Colors: 16, Version: 8}}},
+		{`five colors`, Options{Plan: Plan{Colors: 5, Version: 8}}},
 		{`version too large`, Options{Plan: Plan{Colors: 8, Version: 33}}},
 		{`negative version`, Options{Plan: Plan{Colors: 8, Version: -1}}},
 		{`negative module size`, Options{ModulePx: -1}},

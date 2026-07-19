@@ -5,6 +5,8 @@ import (
 	"image"
 	"iter"
 	"math"
+	"slices"
+	"sync"
 
 	"github.com/srlehn/jabcode/encoder"
 	"github.com/srlehn/serve/internal/barcodestream"
@@ -14,9 +16,34 @@ import (
 // whose color count and version never change within a stream, so
 // every frame shares exact geometry and byte capacity.
 type Plan struct {
-	Colors  int // module colors, 4 or 8; default 8
+	// Colors is the module color count; default 8. 4 and 8 are the
+	// ISO modes; the higher powers of two through 256 use the
+	// extended high-color profile and need a build with the
+	// jabcode_non_iso_encode tag. On real camera captures 16 colors
+	// read reliably and 32 marginally; the modes above that are for
+	// scanner-grade or pixel-exact digital transfer, so treat
+	// everything past 8 as experimental.
+	Colors  int
 	Version int // square side version 1..32; default 20
 }
+
+// SupportedColors lists the color modes this build accepts, in
+// ascending order. The list is probed from the compiled jabcode
+// encoder rather than hardcoded, so it follows whatever the
+// dependency supports.
+func SupportedColors() []int {
+	return slices.Clone(supportedColors())
+}
+
+var supportedColors = sync.OnceValue(func() []int {
+	var out []int
+	for colors := 4; colors <= 256; colors *= 2 {
+		if _, err := (Plan{Colors: colors, Version: 1}).opaquePlan(1); err == nil {
+			out = append(out, colors)
+		}
+	}
+	return out
+})
 
 // The zero value selects the measured default: 8 colors at version
 // 20x20 carry 1890 raw bytes per symbol in a 97-module square, which
@@ -35,13 +62,14 @@ func (p Plan) withDefaults() Plan {
 }
 
 func (p Plan) opaquePlan(modulePx int) (*encoder.OpaquePlan, error) {
-	// ISO/IEC 23634 defines higher color modes, but they are not
-	// exposed here until real camera transfers justify them.
-	if p.Colors != 4 && p.Colors != 8 {
-		return nil, fmt.Errorf(`jabstream: color count must be 4 or 8, got %d`, p.Colors)
+	if p.Colors > 8 && !highColorAvailable {
+		return nil, fmt.Errorf(`jabstream: %d colors need a build with the jabcode_non_iso_encode tag`, p.Colors)
 	}
-	plan, err := encoder.NewOpaquePlan(image.Pt(p.Version, p.Version),
-		encoder.WithColors(p.Colors), encoder.WithModuleSize(modulePx))
+	options := append([]encoder.Option{
+		encoder.WithColors(p.Colors),
+		encoder.WithModuleSize(modulePx),
+	}, profileOptions(p.Colors)...)
+	plan, err := encoder.NewOpaquePlan(image.Pt(p.Version, p.Version), options...)
 	if err != nil {
 		return nil, fmt.Errorf(`jabstream: %w`, err)
 	}

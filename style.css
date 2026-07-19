@@ -52,6 +52,8 @@ body {
 .left {
     left: 0;
     background-color: var(--pane-bg);
+    /* keep the end of the listing clear of the fixed camera button */
+    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
 }
 
 /* Control the right side */
