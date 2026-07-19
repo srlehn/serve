@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"sort"
 
+	"golang.org/x/text/encoding/charmap"
+
 	"github.com/makiuchi-d/gozxing"
 	"github.com/makiuchi-d/gozxing/common"
 	"github.com/makiuchi-d/gozxing/qrcode/decoder"
 	"github.com/makiuchi-d/gozxing/qrcode/detector"
-	"golang.org/x/text/encoding/charmap"
 )
 
 // QR frames contain compressed binary, not text. ISO-8859-1 gives every byte
