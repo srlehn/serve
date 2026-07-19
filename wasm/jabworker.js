@@ -30,6 +30,8 @@ let hits = 0;
 let misses = 0;
 let decodeMillis = 0;
 let lastReport = performance.now();
+let lastMissReason = '';
+let lastMissLog = 0;
 function reportStats(force) {
     if (!logging) return;
     const now = performance.now();
@@ -58,7 +60,22 @@ onmessage = async e => {
         return;
     }
     scans++;
-    decodeMillis += performance.now() - started;
+    const elapsed = performance.now() - started;
+    decodeMillis += elapsed;
+    if (result && result.miss) {
+        /* diagnostic misses: the shim says why a frame was unusable.
+           Log when the reason changes or every two seconds. */
+        misses++;
+        const now = performance.now();
+        if (result.reason !== lastMissReason || now - lastMissLog > 2000) {
+            wlog('miss ms=' + Math.round(elapsed) + ' ' + result.reason);
+            lastMissReason = result.reason;
+            lastMissLog = now;
+        }
+        reportStats(false);
+        postMessage(null);
+        return;
+    }
     if (result) hits++;
     else misses++;
     reportStats(Boolean(result && result.done));

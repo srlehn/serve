@@ -3,7 +3,7 @@
 // The browser-side jabstream receiver, the JAB Code peer of the
 // qrstream shim. Exposes
 //
-//	jabstreamScanFrame(imageData) -> {fileID, have, total, done, sameAsLast, name?, data?} | {error, recoverable} | null
+//	jabstreamScanFrame(imageData) -> {fileID, have, total, done, sameAsLast, name?, data?} | {error, recoverable} | {miss, reason}
 //
 // on the JS global with the same result protocol as the QR shim.
 // Camera frames flow through one persistent jabcode Stream decoder
@@ -14,12 +14,15 @@
 // remembered for sameAsLast suppression.
 //
 // A frame that holds no decodable JAB symbol or fails the envelope
-// check is an unusable frame (null), not an error. Collector
-// failures are recoverable: assembled state is dropped and the
-// symbol decoder reset so the next frame starts clean.
+// check is an unusable frame, not an error; the miss result names
+// the reason so the worker can ship it to the diagnostic log while
+// the page keeps treating it as a plain miss. Collector failures are
+// recoverable: assembled state is dropped and the symbol decoder
+// reset so the next frame starts clean.
 package main
 
 import (
+	"fmt"
 	"image"
 	"syscall/js"
 
@@ -48,29 +51,42 @@ func main() {
 		decoder.Reset()
 	}
 
+	// A miss result carries the reason so the worker can ship it to
+	// the diagnostic log; the page still treats it as an unusable
+	// frame.
+	miss := func(reason string) js.Value {
+		result := js.Global().Get(`Object`).New()
+		result.Set(`miss`, true)
+		result.Set(`reason`, reason)
+		return result
+	}
+
 	js.Global().Set(`jabstreamScanFrame`, js.FuncOf(func(this js.Value, args []js.Value) any {
 		if len(args) < 1 {
-			return js.Null()
+			return miss(`no image argument`)
 		}
 		imageData := args[0]
 		w := imageData.Get(`width`).Int()
 		h := imageData.Get(`height`).Int()
 		if w <= 0 || h <= 0 || w > maxFramePixels/h {
-			return js.Null()
+			return miss(fmt.Sprintf(`bad frame dimensions %dx%d`, w, h))
 		}
 		img := image.NewRGBA(image.Rect(0, 0, w, h))
-		if js.CopyBytesToGo(img.Pix, imageData.Get(`data`)) != len(img.Pix) {
-			return js.Null()
+		if n := js.CopyBytesToGo(img.Pix, imageData.Get(`data`)); n != len(img.Pix) {
+			return miss(fmt.Sprintf(`pixel copy %d of %d bytes`, n, len(img.Pix)))
 		}
 		msg, err := decoder.DecodeMessage(img)
 		if err != nil {
-			return js.Null()
+			return miss(fmt.Sprintf(`decode %dx%d: %v`, w, h, err))
+		}
+		if _, err := jabstream.OpenFrame(msg.Data); err != nil {
+			// decoded symbol, but not an intact sealed qS frame:
+			// corrupt envelope or foreign JAB content
+			return miss(fmt.Sprintf(`envelope (%d symbol bytes): %v`, len(msg.Data), err))
 		}
 		id, ok := jabstream.FrameID(msg.Data)
 		if !ok {
-			// decoded symbol, but not an intact sealed qS frame:
-			// corrupt envelope or foreign JAB content
-			return js.Null()
+			return miss(`sealed frame with invalid qS header`)
 		}
 
 		result := js.Global().Get(`Object`).New()
