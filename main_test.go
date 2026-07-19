@@ -698,8 +698,12 @@ func TestCameraScannerProvidesRecoveryUI(t *testing.T) {
 		`class="save"`,
 		`class="restart"`,
 		`location.assign(cameraButton.dataset.httpsUrl)`,
-		`const scannerBackend = Object.freeze({`,
+		`let scannerBackend = Object.freeze({`,
 		`worker = new Worker(scannerBackend.workerURL)`,
+		`class="scanner-select"`,
+		`data-worker-url="/jabworker.js"`,
+		`data-dialog-title="receive JAB Code stream"`,
+		`scannerSelect.addEventListener('change'`,
 		`camProgress.textContent = scannerBackend.idlePrompt`,
 		`if (worker !== scanWorker) return`,
 		`worker.addEventListener('messageerror'`,
@@ -720,20 +724,31 @@ func TestCameraScannerProvidesRecoveryUI(t *testing.T) {
 		t.Error("scanner page still constructs the HTTPS port in JavaScript")
 	}
 
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, `/qrworker.js`, nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("worker status = %d", rec.Code)
-	}
-	worker := rec.Body.String()
-	for _, want := range []string{
-		`if (result.error)`,
-		`recoverable: Boolean(result.recoverable)`,
-		`recoverable: false`,
+	for path, scanFunc := range map[string]string{
+		`/qrworker.js`:  `qrstreamScanFrame`,
+		`/jabworker.js`: `jabstreamScanFrame`,
 	} {
-		if !strings.Contains(worker, want) {
-			t.Errorf("scanner worker does not contain %q", want)
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d", path, rec.Code)
 		}
+		worker := rec.Body.String()
+		for _, want := range []string{
+			scanFunc,
+			`if (result.error)`,
+			`recoverable: Boolean(result.recoverable)`,
+			`recoverable: false`,
+		} {
+			if !strings.Contains(worker, want) {
+				t.Errorf("%s does not contain %q", path, want)
+			}
+		}
+	}
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, `/jabstream.wasm`, nil))
+	if rec.Code != http.StatusOK || rec.Header().Get(`Content-Type`) != `application/wasm` {
+		t.Fatalf("jab wasm response = %d %q", rec.Code, rec.Header().Get(`Content-Type`))
 	}
 
 	rec = httptest.NewRecorder()
@@ -775,7 +790,7 @@ func TestConfiguredTransferBackends(t *testing.T) {
 		t.Fatalf("QR backend = %#v", qr)
 	}
 	jab := backends[1]
-	if !jab.SenderAvailable || jab.ScannerAvailable || jab.ID != `jab` ||
+	if !jab.SenderAvailable || !jab.ScannerAvailable || jab.ID != `jab` ||
 		jab.SenderPathPrefix != `/jab/` || jab.WasmURL != `/jabstream.wasm` ||
 		jab.Scanner != jabScannerBackend(false) {
 		t.Fatalf("JAB backend = %#v", jab)
@@ -784,15 +799,15 @@ func TestConfiguredTransferBackends(t *testing.T) {
 		t.Fatalf("JAB worker URL = %q", jab.Scanner.WorkerURL)
 	}
 
-	scanner, ok := selectedScanner(backends)
-	if !ok || scanner.ID != `qr` {
-		t.Fatalf("selected scanner = %#v, available = %t", scanner, ok)
+	scanners := availableScanners(backends)
+	if len(scanners) != 2 || scanners[0].ID != `qr` || scanners[1].ID != `jab` {
+		t.Fatalf("available scanners = %#v", scanners)
 	}
 	for i := range backends {
 		backends[i].ScannerAvailable = false
 	}
-	if scanner, ok := selectedScanner(backends); ok {
-		t.Fatalf("selected unavailable scanner %#v", scanner)
+	if scanners := availableScanners(backends); len(scanners) != 0 {
+		t.Fatalf("scanners from unavailable backends: %#v", scanners)
 	}
 }
 
@@ -845,19 +860,18 @@ func TestTransferActionsRendered(t *testing.T) {
 			t.Errorf("page does not contain %q", want)
 		}
 	}
-	// the JAB scanner is not shipped: no worker or wasm value may
-	// reach the page, and the scanner stays QR
-	for _, unavailable := range []string{
-		`/jabworker.js`,
-		`/jabstream.wasm`,
-		`data-scanner-id="jab"`,
-	} {
-		if strings.Contains(body, unavailable) {
-			t.Errorf("page exposes unavailable scanner value %q", unavailable)
-		}
-	}
+	// QR stays the initial scanner; JAB is offered via the select
 	if !strings.Contains(body, `data-scanner-id="qr"`) {
-		t.Error("page does not select the QR scanner")
+		t.Error("page does not select the QR scanner initially")
+	}
+	for _, want := range []string{
+		`class="scanner-select"`,
+		`<option value="qr"`,
+		`<option value="jab"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page does not contain %q", want)
+		}
 	}
 }
 
@@ -1167,10 +1181,12 @@ func TestJABSenderColorSelection(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, `f.bin`), []byte(`payload`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// values no build accepts; build-dependent modes are handled in
+	// the loop below so this test cannot start an unbounded stream
 	for _, target := range []string{
 		`/jab/f.bin?colors=7`,
 		`/jab/f.bin?colors=abc`,
-		`/jab/f.bin?colors=64`,
+		`/jab/f.bin?colors=512`,
 		`/jab/f.bin?colors=-8`,
 	} {
 		rec := httptest.NewRecorder()

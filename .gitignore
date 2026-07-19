@@ -8,4 +8,5 @@
 /_annex/
 /vendor/
 /wasm/qrstream.wasm
+/wasm/jabstream.wasm
 /wasm/wasm_exec.js

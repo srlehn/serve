@@ -119,17 +119,21 @@ var pageTemplate string
 //go:embed style.css
 var styleCSS []byte
 
-// the camera scanner: the qrstream decoder compiled to wasm plus
-// the matching JS loader. Rebuild with go generate.
+// the camera scanners: the qrstream and jabstream decoders compiled
+// to wasm plus the shared JS loader. Rebuild with go generate.
 //
 //go:generate go run wasm/generate.go
 var (
 	//go:embed wasm/qrstream.wasm
 	qrWASM []byte
+	//go:embed wasm/jabstream.wasm
+	jabWASM []byte
 	//go:embed wasm/wasm_exec.js
 	wasmExec []byte
 	//go:embed wasm/worker.js
 	qrWorker []byte
+	//go:embed wasm/jabworker.js
+	jabWorker []byte
 )
 
 type server struct {
@@ -191,8 +195,10 @@ func (s *server) mux() *http.ServeMux {
 	}
 	// instantiateStreaming requires the exact wasm content type.
 	mux.HandleFunc("/qrstream.wasm", serveStatic(`application/wasm`, qrWASM))
+	mux.HandleFunc("/jabstream.wasm", serveStatic(`application/wasm`, jabWASM))
 	mux.HandleFunc("/wasm_exec.js", serveStatic(`text/javascript`, wasmExec))
 	mux.HandleFunc("/qrworker.js", serveStatic(`text/javascript`, qrWorker))
+	mux.HandleFunc("/jabworker.js", serveStatic(`text/javascript`, jabWorker))
 	mux.HandleFunc("/style.css", serveStatic(`text/css`, styleCSS))
 	return mux
 }
@@ -876,14 +882,10 @@ func configuredTransferBackends(browserLogging bool) []transferBackend {
 			DirActionIconID:  `action-icon-qr-archive`,
 			Scanner:          qrScannerBackend(browserLogging),
 		},
-		// The JAB sender endpoint and encoder are complete; the
-		// in-browser scanner stays unavailable until its worker and
-		// wasm module ship, so no jab worker or wasm value may reach
-		// the page.
 		{
 			ID:               `jab`,
 			SenderAvailable:  true,
-			ScannerAvailable: false,
+			ScannerAvailable: true,
 			SenderPathPrefix: `/jab/`,
 			WasmURL:          `/jabstream.wasm`,
 			ActionLabel:      `JAB Code`,
@@ -895,13 +897,16 @@ func configuredTransferBackends(browserLogging bool) []transferBackend {
 	}
 }
 
-func selectedScanner(backends []transferBackend) (scannerBackend, bool) {
+// availableScanners lists the compiled-in scanner descriptors, in
+// backend order; the first one is the initial selection.
+func availableScanners(backends []transferBackend) []scannerBackend {
+	var scanners []scannerBackend
 	for _, backend := range backends {
 		if backend.ScannerAvailable {
-			return backend.Scanner, true
+			scanners = append(scanners, backend.Scanner)
 		}
 	}
-	return scannerBackend{}, false
+	return scanners
 }
 
 // transferActions builds the per-entry sender actions. A directory
@@ -938,7 +943,8 @@ type pageData struct {
 	DirActions     []pageAction
 	UploadURL      string
 	QRURL          string
-	Scanner        scannerBackend
+	Scanner        scannerBackend   // initial selection
+	Scanners       []scannerBackend // every compiled-in scanner
 	HTTPSURL       string
 	ShowQR         bool
 	BrowserLogging bool
@@ -950,8 +956,8 @@ func (s *server) page(w http.ResponseWriter, req *http.Request) {
 
 func (s *server) renderDirectory(w io.Writer, req *http.Request, directory filebrowser.Directory) error {
 	backends := configuredTransferBackends(s.browserLogging)
-	scanner, ok := selectedScanner(backends)
-	if !ok {
+	scanners := availableScanners(backends)
+	if len(scanners) == 0 {
 		return errors.New(`no scanner backend is available`)
 	}
 	entries := make([]pageEntry, 0, len(directory.Entries))
@@ -1001,7 +1007,8 @@ func (s *server) renderDirectory(w io.Writer, req *http.Request, directory fileb
 		DirActions:     transferActions(backends, currentName, directory.Name, true),
 		UploadURL:      uploadURL,
 		QRURL:          qrURL,
-		Scanner:        scanner,
+		Scanner:        scanners[0],
+		Scanners:       scanners,
 		HTTPSURL:       httpsPageURL(req),
 		ShowQR:         !loopbackHost(req.Host) || altHost() != ``,
 		BrowserLogging: s.browserLogging,

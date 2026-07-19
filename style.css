@@ -217,6 +217,17 @@ dialog::backdrop {
     padding: max(4px, env(safe-area-inset-top, 0px)) 8px 4px;
 }
 
+.camera-header .scanner-select {
+    flex: 0 0 auto;
+    margin: 0 8px;
+    min-height: 32px;
+    background: var(--pane-bg);
+    color: inherit;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font: inherit;
+}
+
 .camera-header .close {
     flex: 0 0 auto;
     width: 44px;

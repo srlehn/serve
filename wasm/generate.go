@@ -31,10 +31,15 @@ func main() {
 }
 
 func run() error {
-	c := exec.Command(`go`, `build`, `-trimpath`, `-ldflags=-s -w`, `-o`, `wasm/qrstream.wasm`, `./wasm/shim`)
-	c.Env = append(os.Environ(), `GOOS=js`, `GOARCH=wasm`)
-	c.Stdout, c.Stderr = os.Stdout, os.Stderr
-	if err := c.Run(); err != nil {
+	// One generator run owns every scanner module: both builds and
+	// the shared loader succeed or fail as a single operation.
+	if err := buildWasm(`wasm/qrstream.wasm`, `./wasm/shim`); err != nil {
+		return err
+	}
+	// The JAB decoder compiles with the high-color capabilities so
+	// the browser reads every mode the sender can emit.
+	if err := buildWasm(`wasm/jabstream.wasm`, `./wasm/jabshim`,
+		`-tags=jabcode_non_iso_encode,jabcode_high_color`); err != nil {
 		return err
 	}
 	root, err := output(`go`, `env`, `GOROOT`)
@@ -46,6 +51,15 @@ func run() error {
 		js = filepath.Join(root, `misc`, `wasm`, `wasm_exec.js`)
 	}
 	return done(`go`, js)
+}
+
+func buildWasm(out, pkg string, extraFlags ...string) error {
+	args := append([]string{`build`, `-trimpath`, `-ldflags=-s -w`}, extraFlags...)
+	args = append(args, `-o`, out, pkg)
+	c := exec.Command(`go`, args...)
+	c.Env = append(os.Environ(), `GOOS=js`, `GOARCH=wasm`)
+	c.Stdout, c.Stderr = os.Stdout, os.Stderr
+	return c.Run()
 }
 
 func output(name string, args ...string) (string, error) {
@@ -61,10 +75,12 @@ func done(toolchain, loaderJS string) error {
 	if err := os.WriteFile(`wasm/wasm_exec.js`, src, 0o644); err != nil {
 		return err
 	}
-	fi, err := os.Stat(`wasm/qrstream.wasm`)
-	if err != nil {
-		return err
+	for _, module := range []string{`wasm/qrstream.wasm`, `wasm/jabstream.wasm`} {
+		fi, err := os.Stat(module)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("built %s with %s: %d bytes\n", module, toolchain, fi.Size())
 	}
-	fmt.Printf("built with %s: %d bytes\n", toolchain, fi.Size())
 	return nil
 }

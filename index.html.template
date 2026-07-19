@@ -126,6 +126,11 @@
         <div class="camera-shell">
             <header class="camera-header">
                 <strong id="camera-title">{{.Scanner.DialogTitle}}</strong>
+                {{if gt (len .Scanners) 1}}<select class="scanner-select" title="scanner symbology"
+                    aria-label="scanner symbology">{{range .Scanners}}
+                    <option value="{{.ID}}" data-worker-url="{{.WorkerURL}}" data-dialog-title="{{.DialogTitle}}"
+                        data-idle-prompt="{{.IdlePrompt}}" data-transfer-label="{{.TransferLabel}}">{{.TransferLabel}}</option>{{end}}
+                </select>{{end}}
                 <button class="close" type="button" title="close" aria-label="close scanner">&times;</button>
             </header>
             <div class="camera-stage">
@@ -326,13 +331,15 @@
        this device. Scanning continues after a file completes so the
        next stream is picked up without reopening. */
     const cameraButton = document.querySelector('.camera-open');
-    const scannerBackend = Object.freeze({
+    let scannerBackend = Object.freeze({
         id: cameraButton.dataset.scannerId,
         workerURL: cameraButton.dataset.workerUrl,
         idlePrompt: cameraButton.dataset.idlePrompt,
         transferLabel: cameraButton.dataset.transferLabel,
     });
     const camDialog = document.querySelector('.camera-dialog');
+    const scannerSelect = camDialog.querySelector('.scanner-select');
+    const cameraTitle = camDialog.querySelector('#camera-title');
     const video = camDialog.querySelector('video');
     const camProgress = camDialog.querySelector('.progress');
     const frameProgress = camDialog.querySelector('.frame-progress');
@@ -402,6 +409,26 @@
         scanning = Boolean(camDialog.open && camStream);
         camProgress.textContent = scannerBackend.idlePrompt;
     }
+    /* explicit scanner selection: switching terminates the old
+       worker with its collected state and starts the newly selected
+       decoder fresh. A pending received file stays saveable - the
+       save flow is independent of the scanner choice. */
+    if (scannerSelect) scannerSelect.addEventListener('change', () => {
+        const option = scannerSelect.selectedOptions[0];
+        scannerBackend = Object.freeze({
+            id: option.value,
+            workerURL: option.dataset.workerUrl,
+            idlePrompt: option.dataset.idlePrompt,
+            transferLabel: option.dataset.transferLabel,
+        });
+        cameraTitle.textContent = option.dataset.dialogTitle;
+        frameProgress.setAttribute('aria-label',
+            'received ' + scannerBackend.transferLabel + ' stream frames');
+        qlog('scanner switched to ' + scannerBackend.id);
+        cameraGeneration++;
+        resetFrameProgress();
+        restartDecoder();
+    });
     function scanResult(result) {
         if (!result) return;
         if (result.error) {
