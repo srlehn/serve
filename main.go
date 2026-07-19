@@ -608,18 +608,128 @@ const (
 type pageEntry struct {
 	Name        string
 	Href        string
-	QRHref      string
 	ArchiveHref string
+	Actions     []pageAction
 	Note        string
 	Icon        listingIcon
 }
 
+type pageAction struct {
+	BackendID      string
+	CSSClass       string
+	Href           string
+	Title          string
+	AccessibleName string
+	IconID         string
+}
+
+type scannerBackend struct {
+	ID            string
+	WorkerURL     string
+	DialogTitle   string
+	IdlePrompt    string
+	TransferLabel string
+}
+
+func qrScannerBackend(browserLogging bool) scannerBackend {
+	workerURL := `/qrworker.js`
+	if browserLogging {
+		workerURL += `?log=1`
+	}
+	return scannerBackend{
+		ID:            `qr`,
+		WorkerURL:     workerURL,
+		DialogTitle:   `receive QR stream`,
+		IdlePrompt:    `point the camera at the QR codes`,
+		TransferLabel: `QR`,
+	}
+}
+
+func jabScannerBackend(browserLogging bool) scannerBackend {
+	workerURL := `/jabworker.js`
+	if browserLogging {
+		workerURL += `?log=1`
+	}
+	return scannerBackend{
+		ID:            `jab`,
+		WorkerURL:     workerURL,
+		DialogTitle:   `receive JAB Code stream`,
+		IdlePrompt:    `point the camera at the JAB Code stream`,
+		TransferLabel: `JAB Code`,
+	}
+}
+
+type transferBackend struct {
+	ID               string
+	Available        bool
+	SenderPathPrefix string
+	WasmURL          string
+	ActionLabel      string
+	ActionClass      string
+	ActionIconID     string
+	Scanner          scannerBackend
+}
+
+func configuredTransferBackends(browserLogging bool) []transferBackend {
+	return []transferBackend{
+		{
+			ID:               `qr`,
+			Available:        true,
+			SenderPathPrefix: `/qr/`,
+			WasmURL:          `/qrstream.wasm`,
+			ActionLabel:      `QR codes`,
+			ActionClass:      `qr-transfer`,
+			ActionIconID:     `action-icon-qr`,
+			Scanner:          qrScannerBackend(browserLogging),
+		},
+		// JAB remains unavailable until its sender, worker, wasm, and
+		// module dependency are present together.
+		{
+			ID:               `jab`,
+			Available:        false,
+			SenderPathPrefix: `/jab/`,
+			WasmURL:          `/jabstream.wasm`,
+			ActionLabel:      `JAB Code`,
+			ActionClass:      `jab-transfer`,
+			Scanner:          jabScannerBackend(browserLogging),
+		},
+	}
+}
+
+func selectedScanner(backends []transferBackend) (scannerBackend, bool) {
+	for _, backend := range backends {
+		if backend.Available {
+			return backend.Scanner, true
+		}
+	}
+	return scannerBackend{}, false
+}
+
+func transferActions(backends []transferBackend, name, path string) []pageAction {
+	actions := make([]pageAction, 0, len(backends))
+	for _, backend := range backends {
+		if !backend.Available {
+			continue
+		}
+		actions = append(actions, pageAction{
+			BackendID:      backend.ID,
+			CSSClass:       backend.ActionClass,
+			Href:           (&url.URL{Path: backend.SenderPathPrefix + path}).EscapedPath(),
+			Title:          `transfer via ` + backend.ActionLabel,
+			AccessibleName: `transfer ` + name + ` via ` + backend.ActionLabel,
+			IconID:         backend.ActionIconID,
+		})
+	}
+	return actions
+}
+
 type pageData struct {
 	Files          []pageEntry
+	Backends       []transferBackend
 	ArchiveURL     string
 	UploadURL      string
 	QRURL          string
-	WorkerURL      string
+	Scanner        scannerBackend
 	HTTPSURL       string
 	ShowQR         bool
 	BrowserLogging bool
@@ -630,6 +740,11 @@ func (s *server) page(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *server) renderDirectory(w io.Writer, req *http.Request, directory filebrowser.Directory) error {
+	backends := configuredTransferBackends(s.browserLogging)
+	scanner, ok := selectedScanner(backends)
+	if !ok {
+		return errors.New(`no scanner backend is available`)
+	}
 	entries := make([]pageEntry, 0, len(directory.Entries))
 	for _, file := range directory.Entries {
 		entry := pageEntry{Name: file.Name, Icon: listingFileIcon(file.Name)}
@@ -651,7 +766,7 @@ func (s *server) renderDirectory(w io.Writer, req *http.Request, directory fileb
 			}
 		case file.IsRegular():
 			entry.Href = file.Href
-			entry.QRHref = (&url.URL{Path: `/qr/` + file.Path}).EscapedPath()
+			entry.Actions = transferActions(backends, file.Name, file.Path)
 		default:
 			entry.Note = `special file not served`
 		}
@@ -665,16 +780,13 @@ func (s *server) renderDirectory(w io.Writer, req *http.Request, directory fileb
 		}
 	}
 	qrURL := `/qrurl?` + url.Values{`path`: {req.URL.Path}}.Encode()
-	workerURL := `/qrworker.js`
-	if s.browserLogging {
-		workerURL += `?log=1`
-	}
 	data := pageData{
 		Files:          entries,
+		Backends:       backends,
 		ArchiveURL:     archiveURL(directory.Name),
 		UploadURL:      uploadURL,
 		QRURL:          qrURL,
-		WorkerURL:      workerURL,
+		Scanner:        scanner,
 		HTTPSURL:       httpsPageURL(req),
 		ShowQR:         !loopbackHost(req.Host) || altHost() != ``,
 		BrowserLogging: s.browserLogging,

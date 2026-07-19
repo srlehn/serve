@@ -675,6 +675,13 @@ func TestCameraScannerProvidesRecoveryUI(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		`data-https-url="https://serve.test:8443/?target=file"`,
+		`data-scanner-id="qr"`,
+		`data-worker-url="/qrworker.js"`,
+		`data-idle-prompt="point the camera at the QR codes"`,
+		`data-transfer-label="QR"`,
+		`aria-label="open QR scanner"`,
+		`aria-label="received QR stream frames"`,
+		`<strong id="camera-title">receive QR stream</strong>`,
 		`class="camera-dialog"`,
 		`class="scan-guide"`,
 		`class="frame-progress"`,
@@ -682,9 +689,19 @@ func TestCameraScannerProvidesRecoveryUI(t *testing.T) {
 		`class="save"`,
 		`class="restart"`,
 		`location.assign(cameraButton.dataset.httpsUrl)`,
+		`const scannerBackend = Object.freeze({`,
+		`worker = new Worker(scannerBackend.workerURL)`,
+		`camProgress.textContent = scannerBackend.idlePrompt`,
+		`if (worker !== scanWorker) return`,
 		`worker.addEventListener('messageerror'`,
 		`if (result.recoverable)`,
 		`function restartDecoder()`,
+		`const have = Math.min(total, Math.max(0, Number(result.have) || 0))`,
+		`scanBusy = false`,
+		`cameraGeneration++`,
+		`clearInterval(scanTimer)`,
+		`if (worker) worker.terminate()`,
+		`if (camStream) for (const t of camStream.getTracks()) t.stop()`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("scanner page does not contain %q", want)
@@ -716,6 +733,92 @@ func TestCameraScannerProvidesRecoveryUI(t *testing.T) {
 	for _, want := range []string{`100dvh`, `object-fit: contain`, `.camera-actions[hidden]`} {
 		if !strings.Contains(styles, want) {
 			t.Errorf("scanner styles do not contain %q", want)
+		}
+	}
+}
+
+func TestQRScannerBackendDescriptor(t *testing.T) {
+	want := scannerBackend{
+		ID:            `qr`,
+		WorkerURL:     `/qrworker.js`,
+		DialogTitle:   `receive QR stream`,
+		IdlePrompt:    `point the camera at the QR codes`,
+		TransferLabel: `QR`,
+	}
+	if got := qrScannerBackend(false); got != want {
+		t.Fatalf("QR scanner descriptor = %#v, want %#v", got, want)
+	}
+	want.WorkerURL += `?log=1`
+	if got := qrScannerBackend(true); got != want {
+		t.Fatalf("logged QR scanner descriptor = %#v, want %#v", got, want)
+	}
+}
+
+func TestConfiguredTransferBackends(t *testing.T) {
+	backends := configuredTransferBackends(false)
+	if len(backends) != 2 {
+		t.Fatalf("configured backends = %d, want 2", len(backends))
+	}
+	qr := backends[0]
+	if !qr.Available || qr.ID != `qr` || qr.SenderPathPrefix != `/qr/` ||
+		qr.WasmURL != `/qrstream.wasm` || qr.Scanner != qrScannerBackend(false) {
+		t.Fatalf("QR backend = %#v", qr)
+	}
+	jab := backends[1]
+	if jab.Available || jab.ID != `jab` || jab.SenderPathPrefix != `/jab/` ||
+		jab.WasmURL != `/jabstream.wasm` || jab.Scanner != jabScannerBackend(false) {
+		t.Fatalf("disabled JAB backend = %#v", jab)
+	}
+	if jab.Scanner.WorkerURL != `/jabworker.js` {
+		t.Fatalf("JAB worker URL = %q", jab.Scanner.WorkerURL)
+	}
+
+	scanner, ok := selectedScanner(backends)
+	if !ok || scanner.ID != `qr` {
+		t.Fatalf("selected scanner = %#v, available = %t", scanner, ok)
+	}
+	for i := range backends {
+		backends[i].Available = false
+	}
+	if scanner, ok := selectedScanner(backends); ok {
+		t.Fatalf("selected unavailable scanner %#v", scanner)
+	}
+}
+
+func TestUnavailableJABBackendIsNotRendered(t *testing.T) {
+	srv, dir := testServer(t)
+	name := `a & b.txt`
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(`content`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.page(rec, httptest.NewRequest(http.MethodGet, `/`, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("page status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	wantHref := (&url.URL{Path: `/qr/` + name}).EscapedPath()
+	wantHref = strings.ReplaceAll(wantHref, `&`, `&amp;`)
+	for _, want := range []string{
+		`class="qr-transfer"`,
+		`data-transport-id="qr"`,
+		`href="` + wantHref + `"`,
+		`aria-label="transfer a &amp; b.txt via QR codes"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page does not contain %q", want)
+		}
+	}
+	for _, unavailable := range []string{
+		`data-transport-id="jab"`,
+		`/jab/`,
+		`/jabworker.js`,
+		`/jabstream.wasm`,
+		`JAB Code`,
+	} {
+		if strings.Contains(body, unavailable) {
+			t.Errorf("page exposes unavailable backend value %q", unavailable)
 		}
 	}
 }
@@ -764,7 +867,8 @@ func TestBrowserLoggingEnabledAndDefensive(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, `/`, nil))
 	body := rec.Body.String()
-	if !strings.Contains(body, `fetch('/log'`) || !strings.Contains(body, `log=1`) {
+	if !strings.Contains(body, `fetch('/log'`) ||
+		!strings.Contains(body, `data-worker-url="/qrworker.js?log=1"`) {
 		t.Fatalf("enabled page omits browser logging code: %q", body)
 	}
 

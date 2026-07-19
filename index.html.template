@@ -58,7 +58,7 @@
             title="download this directory as a compressed Unix archive" aria-label="download this directory as a compressed Unix archive"><svg
             viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#action-icon-archive"/></svg></a></span><br>
         <p id="archiveStatus" class="archive-status" role="status" aria-live="polite" hidden></p>
-        {{range .Files}}<span class="file-name"><svg class="file-type-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#file-icon-{{.Icon}}"/></svg>{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</span>{{if .ArchiveHref}} <a class="file-action archive-download" href="{{.ArchiveHref}}" title="download directory as a compressed Unix archive" aria-label="download {{.Name}} as a compressed Unix archive"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#action-icon-archive"/></svg></a>{{end}}{{if .QRHref}} <a class="qr-transfer" href="{{.QRHref}}" title="transfer via QR codes" aria-label="transfer {{.Name}} via QR codes"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><use href="#action-icon-qr"/></svg></a>{{end}}{{if .Note}} <small>({{.Note}})</small>{{end}}<br>
+        {{range .Files}}<span class="file-name"><svg class="file-type-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#file-icon-{{.Icon}}"/></svg>{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</span>{{if .ArchiveHref}} <a class="file-action archive-download" href="{{.ArchiveHref}}" title="download directory as a compressed Unix archive" aria-label="download {{.Name}} as a compressed Unix archive"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#action-icon-archive"/></svg></a>{{end}}{{range .Actions}} <a class="{{.CSSClass}}" data-transport-id="{{.BackendID}}" href="{{.Href}}" title="{{.Title}}" aria-label="{{.AccessibleName}}"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><use href="#{{.IconID}}"/></svg></a>{{end}}{{if .Note}} <small>({{.Note}})</small>{{end}}<br>
         {{end}}
     </div>
     <div class="split right">
@@ -78,7 +78,10 @@
             style="position: fixed; bottom: 8px; right: 8px; width: 128px; height: 128px;">{{end}}
     </div>
     <button class="camera-open" type="button" data-https-url="{{.HTTPSURL}}"
-        title="receive a file by scanning its QR codes with this device's camera" aria-label="open QR scanner"><svg
+        data-scanner-id="{{.Scanner.ID}}" data-worker-url="{{.Scanner.WorkerURL}}"
+        data-idle-prompt="{{.Scanner.IdlePrompt}}" data-transfer-label="{{.Scanner.TransferLabel}}"
+        title="receive a file by scanning a {{.Scanner.TransferLabel}} stream with this device's camera"
+        aria-label="open {{.Scanner.TransferLabel}} scanner"><svg
         viewBox="0 0 16 16" width="48" height="48" aria-hidden="true"><path fill="currentColor" d="M1 1h4v2H3v2H1zM11 1h4v4h-2V3h-2zM1 11h2v2h2v2H1zM11 15v-2h2v-2h2v4z"/><circle cx="8" cy="8" r="2.5" fill="currentColor"/></svg></button>
     <dialog class="qr-dialog">
         <img alt="QR codes">
@@ -87,7 +90,7 @@
     <dialog class="camera-dialog" aria-labelledby="camera-title">
         <div class="camera-shell">
             <header class="camera-header">
-                <strong id="camera-title">receive QR stream</strong>
+                <strong id="camera-title">{{.Scanner.DialogTitle}}</strong>
                 <button class="close" type="button" title="close" aria-label="close scanner">&times;</button>
             </header>
             <div class="camera-stage">
@@ -98,7 +101,7 @@
                 <div class="camera-status">
                     <p class="progress" role="status" aria-live="polite"></p>
                     <progress class="frame-progress" max="1" value="0" hidden
-                        aria-label="received QR stream frames"></progress>
+                        aria-label="received {{.Scanner.TransferLabel}} stream frames"></progress>
                 </div>
             </div>
             <div class="camera-actions" hidden>
@@ -283,11 +286,16 @@
     });
 
     /* camera scanning: frames are decoded in the browser by the
-       qrstream decoder compiled to wasm (same pipeline as the
-       server, exact bytes) running in a worker; the file is saved on
+       selected wasm scanner running in a worker; the file is saved on
        this device. Scanning continues after a file completes so the
-       next QR-code stream is picked up without reopening. */
+       next stream is picked up without reopening. */
     const cameraButton = document.querySelector('.camera-open');
+    const scannerBackend = Object.freeze({
+        id: cameraButton.dataset.scannerId,
+        workerURL: cameraButton.dataset.workerUrl,
+        idlePrompt: cameraButton.dataset.idlePrompt,
+        transferLabel: cameraButton.dataset.transferLabel,
+    });
     const camDialog = document.querySelector('.camera-dialog');
     const video = camDialog.querySelector('video');
     const camProgress = camDialog.querySelector('.progress');
@@ -326,7 +334,7 @@
         if (scanWorker) return true;
         let worker;
         try {
-            worker = new Worker('{{.WorkerURL}}');
+            worker = new Worker(scannerBackend.workerURL);
         } catch (err) {
             decoderFailed('decoder could not start: ' + err.message);
             return false;
@@ -356,7 +364,7 @@
         camProgress.textContent = 'restarting decoder';
         if (!loadDecoder()) return;
         scanning = Boolean(camDialog.open && camStream);
-        camProgress.textContent = 'point the camera at the QR codes';
+        camProgress.textContent = scannerBackend.idlePrompt;
     }
     function scanResult(result) {
         if (!result) return;
@@ -478,7 +486,7 @@
             return;
         }
         scanBusy = false;
-        camProgress.textContent = 'point the camera at the QR codes';
+        camProgress.textContent = scannerBackend.idlePrompt;
         video.srcObject = camStream;
         try {
             await video.play();
