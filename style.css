@@ -218,12 +218,21 @@ dialog::backdrop {
 
 /* as large as the viewport allows: displaying works better the
    bigger the symbol is on screen */
+/* square stage sized to fit both viewport axes; it reserves the frame
+   area so the overlay notice can sit dead-center before a frame has
+   even arrived, and so a loading frame does not resize the dialog */
+.qr-stage {
+    position: relative;
+    width: min(94vmin, calc(100vw - 32px), calc(100vh - 76px));
+    width: min(94vmin, calc(100vw - 32px), calc(100dvh - 76px));
+    aspect-ratio: 1 / 1;
+    margin: 0 auto;
+}
+
 .qr-dialog img {
     display: block;
-    width: 94vmin;
-    max-width: calc(100vw - 32px);
-    max-height: calc(100vh - 76px);
-    max-height: calc(100dvh - 76px);
+    width: 100%;
+    height: 100%;
     object-fit: contain;
     image-rendering: pixelated;
 }
@@ -232,6 +241,26 @@ dialog::backdrop {
     margin: 6px 0 0;
     text-align: center;
     font-family: monospace;
+}
+
+/* preparing/error notice, overlaid at the center of the frame area and
+   out of normal flow so it never grows the dialog or gets cropped */
+.qr-dialog .qr-status {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    margin: 0;
+    max-width: calc(100% - 24px);
+    padding: 6px 10px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.72);
+    color: #ffffff;
+    overflow-wrap: anywhere;
+}
+
+.qr-dialog .qr-status[hidden] {
+    display: none;
 }
 
 .camera-dialog {

@@ -141,8 +141,11 @@
         aria-label="open {{.Scanner.TransferLabel}} scanner"><svg
         viewBox="0 0 16 16" width="48" height="48" aria-hidden="true"><path fill="currentColor" d="M1 1h4v2H3v2H1zM11 1h4v4h-2V3h-2zM1 11h2v2h2v2H1zM11 15v-2h2v-2h2v4z"/><circle cx="8" cy="8" r="2.5" fill="currentColor"/></svg></button>
     <dialog class="qr-dialog">
-        <img alt="QR codes">
-        <p></p>
+        <div class="qr-stage">
+            <img alt="QR codes" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">
+            <p class="qr-status" role="status" aria-live="polite" hidden></p>
+        </div>
+        <p class="qr-caption"></p>
     </dialog>
     <dialog class="camera-dialog" aria-labelledby="camera-title">
         <div class="camera-shell">
@@ -332,20 +335,64 @@
 
     const qrDialog = document.querySelector('.qr-dialog');
     const stream = qrDialog.querySelector('img');
-    const caption = qrDialog.querySelector('p');
+    const caption = qrDialog.querySelector('.qr-caption');
+    const qrStatus = qrDialog.querySelector('.qr-status');
+    let qrPrepareTimer, qrPollTimer;
+    /* a decoded stream frame gives the img a real intrinsic size; the
+       blank gif swapped in on close is 1x1, so >1 means a frame shows */
+    function qrFrameShown() {
+        return stream.naturalWidth > 1;
+    }
+    function stopQrPreparing() {
+        clearTimeout(qrPrepareTimer);
+        clearInterval(qrPollTimer);
+        qrStatus.hidden = true;
+        qrStatus.textContent = '';
+    }
     for (const link of document.querySelectorAll('.barcode-transfer')) {
         link.addEventListener('click', e => {
             e.preventDefault();
-            stream.src = link.getAttribute('href');
+            /* a barcode transfer is unrelated to any earlier archive
+               download, so drop the stale header notice that would
+               otherwise read as this action's status */
+            archiveStatus.hidden = true;
+            archiveStatus.textContent = '';
             const leaf = decodeURIComponent(link.pathname.split('/').pop());
-            caption.textContent = leaf === '.' ? 'this directory' : leaf;
+            const name = leaf === '.' ? 'this directory' : leaf;
+            caption.textContent = name;
+            /* the whole stream is archived and encoded before the first
+               frame arrives; announce that centered over the frame area
+               only when it is slow enough to notice, and drop it as soon
+               as a frame renders */
+            stopQrPreparing();
+            qrPrepareTimer = setTimeout(() => {
+                if (!qrFrameShown()) {
+                    qrStatus.textContent = 'preparing ' + name;
+                    qrStatus.hidden = false;
+                }
+            }, 150);
+            qrPollTimer = setInterval(() => {
+                if (qrFrameShown()) stopQrPreparing();
+            }, 120);
+            stream.src = link.getAttribute('href');
             qrDialog.showModal();
         });
     }
+    /* a load event (one per replaced frame) is the fast path; the poll
+       above is the fallback for browsers that render the multipart
+       stream without firing load */
+    stream.addEventListener('load', () => { if (qrFrameShown()) stopQrPreparing(); });
+    stream.addEventListener('error', () => {
+        clearTimeout(qrPrepareTimer);
+        clearInterval(qrPollTimer);
+        qrStatus.textContent = 'could not prepare ' + caption.textContent;
+        qrStatus.hidden = false;
+    });
     /* click on the backdrop (the dialog element itself) closes; Esc is built in */
     qrDialog.addEventListener('click', e => { if (e.target === qrDialog) qrDialog.close(); });
     /* swap in a blank image on close so the browser aborts the stream */
     qrDialog.addEventListener('close', () => {
+        stopQrPreparing();
         stream.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
     });
 
