@@ -52,37 +52,54 @@
         <symbol id="action-icon-qr" viewBox="0 0 16 16">
             <path fill="currentColor" fill-rule="evenodd" d="M0 0h7v7H0zm1 1v5h5V1zm1 1h3v3H2zM9 0h7v7H9zm1 1v5h5V1zm1 1h3v3h-3zM0 9h7v7H0zm1 1v5h5v-5zm1 1h3v3H2zM9 9h2v2H9zm4 0h3v3h-3zm-4 4h3v3H9zm5 1h2v2h-2z"/>
         </symbol>
-        <!-- mini JAB Code after ISO/IEC 23634 figure D.1: the four
-             3-layer concentric finder patterns (black/cyan and
-             black/yellow) with palette data modules between -->
+        <!-- Mini JAB Code inspired by ISO/IEC 23634 Figure D.1:
+            four corner finder patterns, each formed from two overlapping
+            3×3 references in black/cyan or black/yellow, with coloured
+            palette and representative data modules between them. -->
         <symbol id="action-icon-jab" viewBox="0 0 16 16">
-            <path fill="#000" d="M0 0h6v1h-6zM0 5h6v1h-6zM0 1h1v4h-1zM5 1h1v4h-1zM4 4h2v2h-2zM10 0h6v1h-6zM10 5h6v1h-6zM10 1h1v4h-1zM15 1h1v4h-1zM10 4h2v2h-2zM10 10h4v1h-4zM10 13h4v1h-4zM10 11h1v2h-1zM13 11h1v2h-1zM2 10h4v1h-4zM2 13h4v1h-4zM2 11h1v2h-1zM5 11h1v2h-1z"/>
-            <path fill="#00d0d0" d="M2 2h4v1h-4zM2 5h4v1h-4zM2 3h1v2h-1zM5 3h1v2h-1zM0 10h6v1h-6zM0 15h6v1h-6zM0 11h1v4h-1zM5 11h1v4h-1zM4 10h2v2h-2zM4 8h2v2h-2zM14 8h2v2h-2z"/>
-            <path fill="#ffe000" d="M10 2h4v1h-4zM10 5h4v1h-4zM10 3h1v2h-1zM13 3h1v2h-1zM10 10h6v1h-6zM10 15h6v1h-6zM10 11h1v4h-1zM15 11h1v4h-1zM10 10h2v2h-2zM6 6h2v2h-2zM6 10h2v2h-2z"/>
-            <path fill="#e00000" d="M6 0h2v2h-2zM8 4h2v2h-2zM4 6h2v2h-2zM2 8h2v2h-2zM8 8h2v2h-2zM6 14h2v2h-2z"/>
-            <path fill="#00b000" d="M8 0h2v2h-2zM6 4h2v2h-2zM2 6h2v2h-2zM10 6h2v2h-2zM12 8h2v2h-2zM8 12h2v2h-2z"/>
-            <path fill="#0000e0" d="M6 2h2v2h-2zM8 6h2v2h-2zM0 8h2v2h-2zM10 8h2v2h-2zM8 10h2v2h-2zM8 14h2v2h-2z"/>
-            <path fill="#e000e0" d="M8 2h2v2h-2zM0 6h2v2h-2zM14 6h2v2h-2zM6 8h2v2h-2zM6 12h2v2h-2z"/>
-            <path fill="#fff" d="M12 6h2v2h-2z"/>
+            <path fill="#000" d="M7 0h1v1h-1zM1 1h3v1h-3zM10 1h3v1h-3zM1 2h1v1h-1zM9 2h2v1h-2zM1 3h1v1h-1zM3 3h1v1h-1zM5 3h1v1h-1zM10 3h1v1h-1zM12 3h1v1h-1zM14 3h1v1h-1zM5 4h1v1h-1zM8 4h2v1h-2zM14 4h1v1h-1zM3 5h3v1h-3zM8 5h1v1h-1zM12 5h3v1h-3zM8 6h1v1h-1zM4 7h2v1h-2zM14 7h1v1h-1zM0 8h1v1h-1zM10 8h1v1h-1zM13 8h1v1h-1zM14 9h1v1h-1zM7 10h1v1h-1zM3 11h2v1h-2zM12 11h2v1h-2zM2 12h1v1h-1zM4 12h1v1h-1zM11 12h1v1h-1zM13 12h1v1h-1zM2 13h2v1h-2zM9 13h1v1h-1zM11 13h4v1h-4zM5 15h1v1h-1z"/>
+            <path fill="#00d0d0" d="M13 0h1v1h-1zM4 1h2v1h-2zM15 1h1v1h-1zM2 2h2v1h-2zM5 2h1v1h-1zM2 3h1v1h-1zM4 3h1v1h-1zM15 3h1v1h-1zM0 4h1v1h-1zM2 4h3v1h-3zM15 5h1v1h-1zM10 6h1v1h-1zM15 6h1v1h-1zM1 7h1v1h-1zM9 7h2v1h-2zM12 7h1v1h-1zM9 8h1v1h-1zM1 10h1v1h-1zM3 10h3v1h-3zM8 10h1v1h-1zM15 10h1v1h-1zM2 11h1v1h-1zM5 11h1v1h-1zM15 11h1v1h-1zM1 12h1v1h-1zM3 12h1v1h-1zM5 12h1v1h-1zM1 13h1v1h-1zM5 13h1v1h-1zM1 14h3v1h-3zM8 14h1v1h-1zM0 15h1v1h-1zM4 15h1v1h-1zM7 15h1v1h-1z"/>
+            <path fill="#ffe000" d="M8 0h1v1h-1zM8 1h1v1h-1zM11 2h4v1h-4zM11 3h1v1h-1zM13 3h1v1h-1zM12 4h2v1h-2zM6 5h1v1h-1zM1 6h4v1h-4zM2 7h1v1h-1zM7 8h1v1h-1zM11 8h1v1h-1zM8 9h3v1h-3zM12 9h1v1h-1zM0 10h1v1h-1zM12 10h3v1h-3zM1 11h1v1h-1zM14 11h1v1h-1zM6 12h1v1h-1zM8 12h1v1h-1zM10 12h1v1h-1zM12 12h1v1h-1zM14 12h1v1h-1zM6 13h1v1h-1zM10 13h1v1h-1zM10 14h3v1h-3zM8 15h1v1h-1z"/>
+            <path fill="#e00000" d="M4 0h1v1h-1zM6 1h1v1h-1zM13 1h1v1h-1zM8 2h1v1h-1zM15 4h1v1h-1zM1 5h2v1h-2zM7 5h1v1h-1zM7 6h1v1h-1zM3 7h1v1h-1zM6 7h1v1h-1zM11 7h1v1h-1zM13 7h1v1h-1zM3 8h1v1h-1zM0 9h2v1h-2zM4 9h2v1h-2zM10 10h1v1h-1zM11 11h1v1h-1zM7 12h1v1h-1zM9 12h1v1h-1zM15 12h1v1h-1zM0 13h1v1h-1zM2 15h1v1h-1zM14 15h1v1h-1z"/>
+            <path fill="#00b000" d="M3 0h1v1h-1zM9 0h1v1h-1zM7 1h1v1h-1zM7 2h1v1h-1zM15 2h1v1h-1zM6 3h1v1h-1zM1 4h1v1h-1zM9 5h2v1h-2zM12 6h1v1h-1zM5 8h1v1h-1zM7 9h1v1h-1zM13 9h1v1h-1zM9 10h1v1h-1zM8 11h1v1h-1zM10 11h1v1h-1zM0 12h1v1h-1zM5 14h1v1h-1zM14 14h1v1h-1zM3 15h1v1h-1zM12 15h1v1h-1zM15 15h1v1h-1z"/>
+            <path fill="#0000e0" d="M0 0h1v1h-1zM10 0h2v1h-2zM15 0h1v1h-1zM14 1h1v1h-1zM0 2h1v1h-1zM6 4h1v1h-1zM10 4h1v1h-1zM0 5h1v1h-1zM0 6h1v1h-1zM5 6h1v1h-1zM11 6h1v1h-1zM0 7h1v1h-1zM1 8h1v1h-1zM8 8h1v1h-1zM12 8h1v1h-1zM14 8h2v1h-2zM6 10h1v1h-1zM7 11h1v1h-1zM8 13h1v1h-1zM9 14h1v1h-1zM9 15h1v1h-1z"/>
+            <path fill="#e000e0" d="M1 0h2v1h-2zM6 0h1v1h-1zM0 1h1v1h-1zM6 2h1v1h-1zM0 3h1v1h-1zM7 3h1v1h-1zM9 3h1v1h-1zM7 4h1v1h-1zM11 4h1v1h-1zM11 5h1v1h-1zM9 6h1v1h-1zM13 6h1v1h-1zM15 7h1v1h-1zM2 8h1v1h-1zM6 8h1v1h-1zM2 9h2v1h-2zM6 9h1v1h-1zM15 9h1v1h-1zM11 10h1v1h-1zM6 11h1v1h-1zM9 11h1v1h-1zM4 13h1v1h-1zM7 13h1v1h-1zM4 14h1v1h-1zM6 14h2v1h-2zM13 14h1v1h-1zM1 15h1v1h-1zM6 15h1v1h-1zM10 15h2v1h-2z"/>
         </symbol>
         <symbol id="action-icon-qr-archive" viewBox="0 0 16 16">
-            <path fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" d="M1.5 3.5h5l1.5 2h6.5v8h-13z"/>
-            <!-- mini QR inside the folder: one nested finder square
-                 plus data dots -->
-            <path fill="currentColor" fill-rule="evenodd" d="M3.5 7H8v4.5H3.5zm1 1v2.5H7V8zm.75.75h1v1h-1z"/>
-            <path fill="currentColor" d="M9 7h1.5v1.5H9zM11.5 7.5h1v1h-1zM11 9.25h1.5v1.5H11zM9 9.75h1.5v1.5H9zM11.75 11.5h.75v.75h-.75z"/>
+            <!-- White code field keeps the QR mark visible in light/dark themes. -->
+            <path fill="#fff" d="M2.25 6.25h11.5v6.5H2.25z"/>
+            <g fill="#000" shape-rendering="crispEdges">
+                <!-- Reduced QR finder: outer ring, white ring and black core. -->
+                <path fill-rule="evenodd" d="M3 7h5v5H3z M4 8h3v3H4z M5 9h1v1H5z"/>
+                <!-- Representative QR data modules. -->
+                <path d="M9 7h1v1H9z M11 7h2v1h-2z M9 9h2v1H9z M12 9h1v2h-1z M9 11h1v1H9z M10 10h1v1h-1z M11 11h2v1h-2z"/>
+            </g>
+            <!-- Drawn last so the folder outline remains uninterrupted. -->
+            <path fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" d="M1.5 5.25h13v8.25h-13z M1.5 5.25V3.5h5l1.5 1.75h6.5"/>
         </symbol>
         <symbol id="action-icon-jab-archive" viewBox="0 0 16 16">
-            <path fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" d="M1.5 3.5h5l1.5 2h6.5v8h-13z"/>
-            <!-- mini JAB mosaic inside the folder: one concentric
-                 finder pattern plus palette modules -->
-            <path fill="#00d0d0" d="M3.5 7h4.5v4.5H3.5z"/>
-            <path fill="#000" d="M4.25 7.75h3v3h-3z"/>
-            <path fill="#00d0d0" d="M5 8.5h1.5V10H5z"/>
-            <path fill="#e00000" d="M8.75 7h1.5v1.5h-1.5z"/>
-            <path fill="#ffe000" d="M11 7.75h1.5v1.5H11z"/>
-            <path fill="#00b000" d="M11.75 10h1.25v1.25h-1.25z"/>
-            <path fill="#0000e0" d="M8 9.25h1.5v1.5H8z"/>
+            <!-- Required because black is a fixed JAB finder colour. -->
+            <path fill="#fff" d="M2.25 6.25h11.5v6.5H2.25z"/>
+            <g shape-rendering="crispEdges">
+                <!--
+                    ISO/IEC 23634 UL finder:
+                    two overlapping 3×3 references, 17 modules total.
+                    BBB..
+                    BCC..
+                    BCBCB
+                    ..CCB
+                    ..BBB
+                -->
+                <path fill="#000" d="M3 7h3v1H3z M3 8h1v1H3z M3 9h1v1H3z M5 9h1v1H5z M7 9h1v1H7z M7 10h1v1H7z M5 11h3v1H5z"/>
+                <path fill="#00d0d0" d="M4 8h2v1H4z M4 9h1v1H4z M6 9h1v1H6z M5 10h2v1H5z"/>
+                <!-- Representative JAB palette/data modules. -->
+                <path fill="#e00000" d="M9 7h1v1H9zM12 10h1v1h-1z"/>
+                <path fill="#ffe000" d="M11 7h2v1h-2zM10 11h1v1h-1z"/>
+                <path fill="#00b000" d="M10 9h1v1h-1zM12 8h1v1h-1z"/>
+                <path fill="#0000e0" d="M9 10h1v1H9zM11 9h1v1h-1z"/>
+                <path fill="#e000e0" d="M9 8h1v1H9zM11 11h2v1h-2z"/>
+            </g>
+            <path fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" d="M1.5 5.25h13v8.25h-13z M1.5 5.25V3.5h5l1.5 1.75h6.5"/>
         </symbol>
     </svg>
     <div class="split left">
