@@ -25,7 +25,7 @@ GOTAGS ?= jabcode_non_iso_encode,jabcode_high_color
 WASM      := wasm/qrstream.wasm wasm/jabstream.wasm
 WASM_EXEC := wasm/wasm_exec.js
 # the wasm modules embed their shims and decoder packages (minus tests)
-WASM_SRC := go.mod go.sum wasm/shim/main.go wasm/jabshim/main.go wasm/generate.go \
+WASM_SRC := go.mod go.sum wasm/qrshim/main.go wasm/jabshim/main.go wasm/generate.go \
             $(filter-out %_test.go,$(wildcard qrstream/*.go jabstream/*.go))
 
 .PHONY: all build run test clean

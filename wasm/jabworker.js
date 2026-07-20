@@ -1,5 +1,5 @@
 // Scans camera frames with the jabstream wasm receiver off the main
-// thread, the JAB Code peer of worker.js: symbol decoding is far
+// thread, the JAB Code peer of qrworker.js: symbol decoding is far
 // heavier than a page can afford per camera frame.
 
 const logging = new URLSearchParams(self.location.search).get('log') === '1';

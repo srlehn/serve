@@ -130,7 +130,7 @@ var (
 	jabWASM []byte
 	//go:embed wasm/wasm_exec.js
 	wasmExec []byte
-	//go:embed wasm/worker.js
+	//go:embed wasm/qrworker.js
 	qrWorker []byte
 	//go:embed wasm/jabworker.js
 	jabWorker []byte

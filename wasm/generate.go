@@ -33,7 +33,7 @@ func main() {
 func run() error {
 	// One generator run owns every scanner module: both builds and
 	// the shared loader succeed or fail as a single operation.
-	if err := buildWasm(`wasm/qrstream.wasm`, `./wasm/shim`); err != nil {
+	if err := buildWasm(`wasm/qrstream.wasm`, `./wasm/qrshim`); err != nil {
 		return err
 	}
 	// The JAB decoder compiles with the high-color capabilities so
