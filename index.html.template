@@ -103,15 +103,19 @@
         </symbol>
     </svg>
     <div class="split left">
-        <span class="listing-title"><b>Files:</b> <a class="file-action archive-download" href="{{.ArchiveURL}}"
-            title="download this directory as a compressed Unix archive" aria-label="download this directory as a compressed Unix archive"><svg
-            viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#action-icon-archive"/></svg></a>{{range .DirActions}} <a
-            class="barcode-transfer {{.CSSClass}}" data-transport-id="{{.BackendID}}" href="{{.Href}}" title="{{.Title}}"
-            aria-label="{{.AccessibleName}}"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use
-            href="#{{.IconID}}"/></svg></a>{{end}}</span><br>
-        <p id="archiveStatus" class="archive-status" role="status" aria-live="polite" hidden></p>
-        {{range .Files}}<span class="file-name"><svg class="file-type-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#file-icon-{{.Icon}}"/></svg>{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</span>{{if .ArchiveHref}} <a class="file-action archive-download" href="{{.ArchiveHref}}" title="download directory as a compressed Unix archive" aria-label="download {{.Name}} as a compressed Unix archive"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#action-icon-archive"/></svg></a>{{end}}{{range .Actions}} <a class="barcode-transfer {{.CSSClass}}" data-transport-id="{{.BackendID}}" href="{{.Href}}" title="{{.Title}}" aria-label="{{.AccessibleName}}"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><use href="#{{.IconID}}"/></svg></a>{{end}}{{if .Note}} <small>({{.Note}})</small>{{end}}<br>
-        {{end}}
+        <div class="listing-head">
+            <span class="listing-title"><b>Files:</b> <a class="file-action archive-download" href="{{.ArchiveURL}}"
+                title="download this directory as a compressed Unix archive" aria-label="download this directory as a compressed Unix archive"><svg
+                viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#action-icon-archive"/></svg></a>{{range .DirActions}} <a
+                class="barcode-transfer {{.CSSClass}}" data-transport-id="{{.BackendID}}" href="{{.Href}}" title="{{.Title}}"
+                aria-label="{{.AccessibleName}}"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use
+                href="#{{.IconID}}"/></svg></a>{{end}}</span>
+            <span id="archiveStatus" class="archive-status" role="status" aria-live="polite" hidden></span>
+        </div>
+        <div class="file-list">
+            {{range .Files}}<div class="file-entry"><span class="file-name"><svg class="file-type-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#file-icon-{{.Icon}}"/></svg>{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</span>{{if .ArchiveHref}} <a class="file-action archive-download" href="{{.ArchiveHref}}" title="download directory as a compressed Unix archive" aria-label="download {{.Name}} as a compressed Unix archive"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><use href="#action-icon-archive"/></svg></a>{{end}}{{range .Actions}} <a class="barcode-transfer {{.CSSClass}}" data-transport-id="{{.BackendID}}" href="{{.Href}}" title="{{.Title}}" aria-label="{{.AccessibleName}}"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><use href="#{{.IconID}}"/></svg></a>{{end}}{{if .Note}} <small>({{.Note}})</small>{{end}}</div>
+            {{end}}
+        </div>
     </div>
     <div class="split right">
         {{if .UploadURL}}

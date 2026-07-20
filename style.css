@@ -52,8 +52,44 @@ body {
 .left {
     left: 0;
     background-color: var(--pane-bg);
-    /* keep the end of the listing clear of the fixed camera button */
-    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    /* stack a fixed header above a column-filling file list */
+    display: flex;
+    flex-direction: column;
+    /* the list scrolls sideways for extra columns; the pane itself does not */
+    overflow: hidden;
+}
+
+.listing-head {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    min-width: 0;
+}
+
+.listing-head .listing-title {
+    flex: 0 0 auto;
+}
+
+/* File-explorer style: entries fill a column from top to bottom, then
+   wrap into the next column to the right. Flex column-wrap sizes each
+   column to its widest entry (unlike CSS multicol, whose columns share
+   one uniform width). Extra columns scroll horizontally instead of
+   running under the fixed camera button; the bounded height leaves the
+   header line above and the camera button's reserve below. */
+.file-list {
+    display: flex;
+    flex-flow: column wrap;
+    align-content: flex-start;
+    gap: 0 1.5em;
+    height: calc(100dvh - 20px - 64px - 1.8em - env(safe-area-inset-bottom, 0px));
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
+/* one entry per line so a column is only as wide as its longest name */
+.file-entry {
+    white-space: nowrap;
 }
 
 /* Control the right side */
@@ -115,9 +151,16 @@ a {
     outline-offset: 2px;
 }
 
+/* transient archive-download message, kept on the header line to the
+   right of the title; clipped so a long message never wraps the header
+   or pushes the listing down */
 .archive-status {
-    margin: 0.25em 0;
-    overflow-wrap: anywhere;
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* camera scan button, mirroring the page QR badge bottom-right */
