@@ -282,6 +282,7 @@ dialog::backdrop {
 }
 
 .camera-header {
+    grid-row: 1;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -289,19 +290,111 @@ dialog::backdrop {
     padding: max(4px, env(safe-area-inset-top, 0px)) 8px 4px;
 }
 
-.camera-header .scanner-select {
+.camera-header .scanner-change {
     flex: 0 0 auto;
     margin: 0 8px;
     min-height: 32px;
+    padding: 4px 12px;
     background: var(--pane-bg);
     color: inherit;
     border: 1px solid var(--border);
     border-radius: 4px;
     font: inherit;
+    cursor: pointer;
+}
+
+.camera-header .scanner-change[hidden] {
+    display: none;
+}
+
+/* barcode chooser: a blocking gate shown in the stage row before the
+   camera starts, so the user commits to a symbology before any frame
+   appears. The icon tiles reuse the listing barcode symbols on a fixed
+   white field so both the monochrome QR mark and the black JAB finder
+   modules stay visible in either theme. */
+.scanner-choice {
+    grid-row: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    min-height: 0;
+    padding: 20px;
+    text-align: center;
+}
+
+.scanner-choice[hidden] {
+    display: none;
+}
+
+.scanner-choice-prompt {
+    margin: 0;
+    font-size: 1.1rem;
+}
+
+.scanner-choice-grid {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: stretch;
+    gap: 20px;
+}
+
+/* every button is the same fixed width, and align-items: stretch above
+   gives them a shared height, so the two tiles read as one pair no
+   matter how long a symbology label is */
+.scanner-choice-button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    width: min(38vw, 200px);
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-bg);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+.scanner-choice-button:hover,
+.scanner-choice-button:focus-visible {
+    border-color: var(--link);
+    outline: 2px solid var(--link);
+    outline-offset: 2px;
+}
+
+.scanner-choice-icon {
+    display: block;
+    width: 100%;
+    padding: 12px;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #000000;
+    box-sizing: border-box;
+}
+
+.scanner-choice-icon svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
+    shape-rendering: crispEdges;
+}
+
+.scanner-choice-label {
+    font-weight: bold;
+    white-space: nowrap;
 }
 
 .camera-header .close {
     flex: 0 0 auto;
+    /* keep close hard right so the change button sits next to the
+       title instead of being spread to the header's center */
+    margin-left: auto;
     width: 44px;
     height: 44px;
     background: none;
@@ -318,12 +411,17 @@ dialog::backdrop {
 }
 
 .camera-stage {
+    grid-row: 2;
     position: relative;
     display: grid;
     place-items: center;
     min-height: 0;
     overflow: hidden;
     background: #000000;
+}
+
+.camera-stage[hidden] {
+    display: none;
 }
 
 .camera-stage video {
@@ -388,6 +486,7 @@ dialog::backdrop {
 }
 
 .camera-actions {
+    grid-row: 3;
     display: flex;
     flex-wrap: wrap;
     gap: 8px;

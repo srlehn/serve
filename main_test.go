@@ -811,10 +811,13 @@ func TestCameraScannerProvidesRecoveryUI(t *testing.T) {
 		`location.assign(cameraButton.dataset.httpsUrl)`,
 		`let scannerBackend = Object.freeze({`,
 		`worker = new Worker(scannerBackend.workerURL)`,
-		`class="scanner-select"`,
+		`class="scanner-choice"`,
+		`class="scanner-choice-button"`,
 		`data-worker-url="/jabworker.js"`,
 		`data-dialog-title="receive JAB Code stream"`,
-		`scannerSelect.addEventListener('change'`,
+		`function openScanner()`,
+		`function selectScanner(button)`,
+		`cameraButton.addEventListener('click', openScanner)`,
 		`camProgress.textContent = scannerBackend.idlePrompt`,
 		`if (worker !== scanWorker) return`,
 		`worker.addEventListener('messageerror'`,
@@ -865,7 +868,7 @@ func TestCameraScannerProvidesRecoveryUI(t *testing.T) {
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, `/style.css`, nil))
 	styles := rec.Body.String()
-	for _, want := range []string{`100dvh`, `object-fit: contain`, `.camera-actions[hidden]`} {
+	for _, want := range []string{`100dvh`, `object-fit: contain`, `.camera-actions[hidden]`, `.scanner-choice-button`} {
 		if !strings.Contains(styles, want) {
 			t.Errorf("scanner styles do not contain %q", want)
 		}
@@ -875,6 +878,7 @@ func TestCameraScannerProvidesRecoveryUI(t *testing.T) {
 func TestQRScannerBackendDescriptor(t *testing.T) {
 	want := scannerBackend{
 		ID:            `qr`,
+		IconID:        `action-icon-qr`,
 		WorkerURL:     `/qrworker.js`,
 		DialogTitle:   `receive QR stream`,
 		IdlePrompt:    `point the camera at the QR codes`,
@@ -972,14 +976,15 @@ func TestTransferActionsRendered(t *testing.T) {
 			t.Errorf("page does not contain %q", want)
 		}
 	}
-	// QR stays the initial scanner; JAB is offered via the select
+	// QR stays the initial scanner; the chooser offers both symbologies
 	if !strings.Contains(body, `data-scanner-id="qr"`) {
 		t.Error("page does not select the QR scanner initially")
 	}
 	for _, want := range []string{
-		`class="scanner-select"`,
-		`<option value="qr"`,
-		`<option value="jab"`,
+		`class="scanner-choice"`,
+		`class="scanner-choice-button"`,
+		`class="scanner-choice-label"`,
+		`data-scanner-id="jab"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page does not contain %q", want)

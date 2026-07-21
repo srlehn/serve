@@ -151,14 +151,22 @@
         <div class="camera-shell">
             <header class="camera-header">
                 <strong id="camera-title">{{.Scanner.DialogTitle}}</strong>
-                {{if gt (len .Scanners) 1}}<select class="scanner-select" title="scanner symbology"
-                    aria-label="scanner symbology">{{range .Scanners}}
-                    <option value="{{.ID}}" data-worker-url="{{.WorkerURL}}" data-dialog-title="{{.DialogTitle}}"
-                        data-idle-prompt="{{.IdlePrompt}}" data-transfer-label="{{.TransferLabel}}"
-                        data-burst-frames="{{.BurstFrames}}">{{.TransferLabel}}</option>{{end}}
-                </select>{{end}}
+                {{if gt (len .Scanners) 1}}<button class="scanner-change" type="button" hidden
+                    title="change barcode type" aria-label="change barcode type">change</button>{{end}}
                 <button class="close" type="button" title="close" aria-label="close scanner">&times;</button>
             </header>
+            {{if gt (len .Scanners) 1}}<div class="scanner-choice" hidden>
+                <p class="scanner-choice-prompt">Which code are you scanning?</p>
+                <div class="scanner-choice-grid">{{range .Scanners}}
+                    <button class="scanner-choice-button" type="button" data-scanner-id="{{.ID}}"
+                        data-worker-url="{{.WorkerURL}}" data-dialog-title="{{.DialogTitle}}"
+                        data-idle-prompt="{{.IdlePrompt}}" data-transfer-label="{{.TransferLabel}}"
+                        data-burst-frames="{{.BurstFrames}}" aria-label="scan {{.TransferLabel}} stream">
+                        <span class="scanner-choice-icon"><svg viewBox="0 0 16 16" aria-hidden="true"><use href="#{{.IconID}}"/></svg></span>
+                        <span class="scanner-choice-label">{{.TransferLabel}}</span>
+                    </button>{{end}}
+                </div>
+            </div>{{end}}
             <div class="camera-stage">
                 <video playsinline webkit-playsinline muted aria-label="camera preview"></video>
                 <svg class="scan-guide" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
@@ -409,7 +417,10 @@
         burstFrames: Math.max(1, Number(cameraButton.dataset.burstFrames) || 1),
     });
     const camDialog = document.querySelector('.camera-dialog');
-    const scannerSelect = camDialog.querySelector('.scanner-select');
+    const scannerChoice = camDialog.querySelector('.scanner-choice');
+    const scannerButtons = scannerChoice
+        ? [...scannerChoice.querySelectorAll('.scanner-choice-button')] : [];
+    const scannerChange = camDialog.querySelector('.scanner-change');
     const cameraTitle = camDialog.querySelector('#camera-title');
     const video = camDialog.querySelector('video');
     const camProgress = camDialog.querySelector('.progress');
@@ -610,26 +621,45 @@
         scanning = Boolean(camDialog.open && camStream);
         camProgress.textContent = scannerBackend.idlePrompt;
     }
-    /* explicit scanner selection: switching terminates the old
-       worker with its collected state and starts the newly selected
-       decoder fresh. A pending received file stays saveable - the
-       save flow is independent of the scanner choice. */
-    if (scannerSelect) scannerSelect.addEventListener('change', () => {
-        const option = scannerSelect.selectedOptions[0];
+    /* explicit barcode selection: the camera stays dark until the
+       user picks a symbology in the chooser, so a running preview is
+       never mistaken for a decoder that has already locked onto the
+       wrong code. Picking one starts that decoder fresh; the header
+       change button returns here to switch. A pending received file
+       stays saveable - the save flow is independent of the choice. */
+    function showChooser() {
+        if (!scannerChoice) return;
+        scannerChoice.hidden = false;
+        stage.hidden = true;
+        cameraActions.hidden = true;
+        if (scannerChange) scannerChange.hidden = true;
+        cameraTitle.textContent = 'choose barcode type';
+        camProgress.textContent = '';
+    }
+    function selectScanner(button) {
         scannerBackend = Object.freeze({
-            id: option.value,
-            workerURL: option.dataset.workerUrl,
-            idlePrompt: option.dataset.idlePrompt,
-            transferLabel: option.dataset.transferLabel,
-            burstFrames: Math.max(1, Number(option.dataset.burstFrames) || 1),
+            id: button.dataset.scannerId,
+            workerURL: button.dataset.workerUrl,
+            idlePrompt: button.dataset.idlePrompt,
+            transferLabel: button.dataset.transferLabel,
+            burstFrames: Math.max(1, Number(button.dataset.burstFrames) || 1),
         });
-        cameraTitle.textContent = option.dataset.dialogTitle;
+        cameraTitle.textContent = button.dataset.dialogTitle;
         frameProgress.setAttribute('aria-label',
             'received ' + scannerBackend.transferLabel + ' stream frames');
-        qlog('scanner switched to ' + scannerBackend.id);
-        cameraGeneration++;
-        resetFrameProgress();
-        restartDecoder();
+        qlog('scanner selected ' + scannerBackend.id);
+        scannerChoice.hidden = true;
+        stage.hidden = false;
+        if (scannerChange) scannerChange.hidden = false;
+        startCamera();
+    }
+    for (const button of scannerButtons) {
+        button.addEventListener('click', () => selectScanner(button));
+    }
+    if (scannerChange) scannerChange.addEventListener('click', () => {
+        restartButton.hidden = true;
+        stopScanning();
+        showChooser();
     });
     function scanResult(result) {
         if (!result) return;
@@ -713,7 +743,28 @@
         saveButton.textContent = received ? 'save ' + received.name : 'save received file';
         renderCameraActions();
     }
-    async function openCamera() {
+    /* stop everything the current scan owns: the timer, the burst,
+       the decoder worker, and the camera track. Shared by the change
+       button and the close handler, and it bumps the generation so an
+       in-flight getUserMedia from the old session bails when it
+       resolves. */
+    function stopScanning() {
+        cameraGeneration++;
+        scanning = false;
+        clearInterval(scanTimer);
+        dropBurst();
+        stopDecoder();
+        resetFrameProgress();
+        video.pause();
+        if (camStream) for (const t of camStream.getTracks()) t.stop();
+        camStream = null;
+        video.srcObject = null;
+    }
+    /* the camera button opens the dialog on the barcode chooser (see
+       showChooser): no camera is requested and no frame is shown
+       until a symbology is picked. With a single compiled-in scanner
+       there is nothing to choose, so the camera starts at once. */
+    function openScanner() {
         if (openingCamera || camDialog.open) return;
         qlog('camera open requested');
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -728,6 +779,14 @@
             camProgress.textContent = 'camera API unavailable in this browser';
             return;
         }
+        if (scannerButtons.length > 1) {
+            showChooser();
+            camDialog.showModal();
+            return;
+        }
+        startCamera();
+    }
+    async function startCamera() {
         const generation = ++cameraGeneration;
         openingCamera = true;
         cameraButton.disabled = true;
@@ -736,7 +795,7 @@
         renderCameraActions();
         camProgress.textContent = 'requesting camera permission';
         renderReceived();
-        camDialog.showModal();
+        if (!camDialog.open) camDialog.showModal();
         loadDecoder();
         try {
             /* ask for a high-resolution feed: with no resolution
@@ -840,7 +899,7 @@
             }
         }, 100);
     }
-    cameraButton.addEventListener('click', openCamera);
+    cameraButton.addEventListener('click', openScanner);
     camDialog.querySelector('.close').addEventListener('click', () => camDialog.close());
     /* tap on the backdrop (the dialog element itself) closes, like
        the sender dialog; Esc is built in */
@@ -853,19 +912,11 @@
     video.addEventListener('click', saveReceived);
     camDialog.addEventListener('close', () => {
         qlog('camera closed');
-        cameraGeneration++;
         openingCamera = false;
         cameraButton.disabled = false;
-        scanning = false;
-        clearInterval(scanTimer);
-        stopDecoder();
+        stopScanning();
         restartButton.hidden = true;
         renderCameraActions();
-        resetFrameProgress();
-        video.pause();
-        if (camStream) for (const t of camStream.getTracks()) t.stop();
-        camStream = null;
-        video.srcObject = null;
     });
     </script>
 </body>

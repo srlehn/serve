@@ -926,7 +926,11 @@ type pageAction struct {
 }
 
 type scannerBackend struct {
-	ID            string
+	ID string
+	// IconID names the sprite symbol used both for this backend's
+	// listing transfer action and for its button in the camera
+	// symbology chooser, so the two share one drawing.
+	IconID        string
 	WorkerURL     string
 	DialogTitle   string
 	IdlePrompt    string
@@ -946,6 +950,7 @@ func qrScannerBackend(browserLogging bool) scannerBackend {
 	}
 	return scannerBackend{
 		ID:            `qr`,
+		IconID:        `action-icon-qr`,
 		WorkerURL:     workerURL,
 		DialogTitle:   `receive QR stream`,
 		IdlePrompt:    `point the camera at the QR codes`,
@@ -961,6 +966,7 @@ func jabScannerBackend(browserLogging bool) scannerBackend {
 	}
 	return scannerBackend{
 		ID:            `jab`,
+		IconID:        `action-icon-jab`,
 		WorkerURL:     workerURL,
 		DialogTitle:   `receive JAB Code stream`,
 		IdlePrompt:    `point the camera at the JAB Code stream`,
