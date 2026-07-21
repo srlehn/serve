@@ -460,13 +460,15 @@ func altHost() string {
 }
 
 // printURL prints the web UI addresses that answer an HTTP probe,
-// each non-localhost one with QR codes for both schemes: http scans
+// each phone-reachable one with QR codes for both schemes: http scans
 // without the self-signed-certificate warning, https is required
-// before the browser allows camera access. The probe hits our own
-// listener, so it only weeds out locally dead addresses (e.g. a
-// downed bridge); which of the remaining addresses another device
-// can actually reach is unknowable from here, hence QRs per
-// candidate. Survivors are remembered for the loopback QR fallback.
+// before the browser allows camera access. localhost and host-local
+// virtual bridges print as plain URLs with no QR: no scanning phone
+// can reach them. The probe hits our own listener, so it only weeds
+// out locally dead addresses (e.g. a downed bridge); which of the
+// remaining addresses another device can actually reach is unknowable
+// from here, hence QRs per candidate. Survivors are remembered for the
+// loopback QR fallback.
 //
 // The barcoded candidates are collected best first but printed worst
 // first, so the top-preference codes are the ones left on screen at
@@ -498,7 +500,7 @@ func printURL() {
 	alt.Unlock()
 	printHost := func(h hostCandidate) {
 		for _, u := range []string{`http://` + h.host + httpPort + `/`, `https://` + h.host + httpsPort + `/`} {
-			if h.host != `localhost` {
+			if h.host != `localhost` && h.class != classVirtual {
 				if q, err := qrText(u); err == nil {
 					fmt.Print(q)
 				}
