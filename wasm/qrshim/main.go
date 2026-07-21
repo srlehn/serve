@@ -25,12 +25,23 @@ import (
 	qrstream "github.com/srlehn/serve/qrstream"
 )
 
+// maxFramePixels bounds the RGBA allocation for one camera frame,
+// mirroring the jab shim.
+const maxFramePixels = 4096 * 4096
+
 func main() {
 	c := qrstream.NewCollector()
 	var curID uint32 // stream currently being assembled
 	var collecting bool
 	var lastID uint32 // most recently completed stream
 	var haveLast bool
+
+	// The frame buffer is reused while the dimensions stay stable:
+	// camera frames arrive at one fixed size, and a fresh
+	// multi-megabyte allocation per frame grows the wasm heap
+	// faster than the collector returns garbage. decodeImage copies
+	// what it keeps (luminance planes), so reuse is safe.
+	var img *image.RGBA
 
 	js.Global().Set(`qrstreamScanFrame`, js.FuncOf(func(this js.Value, args []js.Value) any {
 		if len(args) < 1 {
@@ -39,7 +50,12 @@ func main() {
 		imageData := args[0]
 		w := imageData.Get(`width`).Int()
 		h := imageData.Get(`height`).Int()
-		img := image.NewRGBA(image.Rect(0, 0, w, h))
+		if w <= 0 || h <= 0 || w > maxFramePixels/h {
+			return js.Null()
+		}
+		if img == nil || img.Rect.Dx() != w || img.Rect.Dy() != h {
+			img = image.NewRGBA(image.Rect(0, 0, w, h))
+		}
 		if js.CopyBytesToGo(img.Pix, imageData.Get(`data`)) != len(img.Pix) {
 			return js.Null()
 		}

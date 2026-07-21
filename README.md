@@ -17,6 +17,7 @@ Flags:
 
 - `-upload-limit` maximum upload size, e.g. `500MB`, `2GiB` (`0` = unlimited)
 - `-browser-log` log browser scanner diagnostics
+- `-store-frames` store scanned camera frames as lossless PNGs plus a `frames.jsonl` metadata log; the value is a filename prefix (trailing `/` for a directory)
 
 ## License
 

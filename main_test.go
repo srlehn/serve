@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"image"
+	"image/color"
 	"image/png"
 	"io"
 	"log"
@@ -24,7 +26,7 @@ import (
 	"github.com/srlehn/serve/jabstream"
 )
 
-func testServerWithOptions(t *testing.T, logger *log.Logger, browserLogging bool, uploadLimit int64) (*server, string) {
+func testServerWithOptions(t *testing.T, logger *log.Logger, browserLogging bool, uploadLimit int64, frameStorePrefix string) (*server, string) {
 	t.Helper()
 	dir := t.TempDir()
 	root, err := os.OpenRoot(dir)
@@ -32,7 +34,7 @@ func testServerWithOptions(t *testing.T, logger *log.Logger, browserLogging bool
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { root.Close() })
-	srv, err := newServer(root.FS(), root, logger, browserLogging, uploadLimit)
+	srv, err := newServer(root.FS(), root, logger, browserLogging, uploadLimit, frameStorePrefix)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,12 +43,17 @@ func testServerWithOptions(t *testing.T, logger *log.Logger, browserLogging bool
 
 func testServerWithLogging(t *testing.T, logger *log.Logger, browserLogging bool) (*server, string) {
 	t.Helper()
-	return testServerWithOptions(t, logger, browserLogging, 0)
+	return testServerWithOptions(t, logger, browserLogging, 0, ``)
 }
 
 func testServerWithUploadLimit(t *testing.T, uploadLimit int64) (*server, string) {
 	t.Helper()
-	return testServerWithOptions(t, log.New(io.Discard, ``, 0), false, uploadLimit)
+	return testServerWithOptions(t, log.New(io.Discard, ``, 0), false, uploadLimit, ``)
+}
+
+func testServerWithFrameStore(t *testing.T, frameStorePrefix string) (*server, string) {
+	t.Helper()
+	return testServerWithOptions(t, log.New(io.Discard, ``, 0), false, 0, frameStorePrefix)
 }
 
 func testServer(t *testing.T) (*server, string) {
@@ -358,8 +365,110 @@ func TestNewServerRejectsNegativeUploadLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	if _, err := newServer(root.FS(), root, log.New(io.Discard, ``, 0), false, -1); err == nil {
+	if _, err := newServer(root.FS(), root, log.New(io.Discard, ``, 0), false, -1, ``); err == nil {
 		t.Fatal("newServer accepted a negative upload limit")
+	}
+}
+
+func TestStoreFrameRoundTrip(t *testing.T) {
+	prefix := filepath.Join(t.TempDir(), `field-`)
+	srv, _ := testServerWithFrameStore(t, prefix)
+	handler := srv.mux()
+
+	// arbitrary alpha proves the store is lossless beyond the
+	// opaque frames a real camera produces
+	img := image.NewNRGBA(image.Rect(0, 0, 3, 2))
+	for i := range img.Pix {
+		img.Pix[i] = uint8(i * 7)
+	}
+	target := frameStorePath + `?w=3&h=2&vw=6&vh=4&zoom=2.00&crop=1.33&backend=jab&t=1721&seq=5&dropped=2`
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, target, bytes.NewReader(img.Pix)))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("store status = %d, body %q", rec.Code, rec.Body.String())
+	}
+
+	pngs, err := filepath.Glob(prefix + `*.png`)
+	if err != nil || len(pngs) != 1 {
+		t.Fatalf("stored PNGs = %v, %v; want exactly one", pngs, err)
+	}
+	f, err := os.Open(pngs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	decoded, err := png.Decode(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.Bounds().Eq(img.Bounds()) {
+		t.Fatalf("stored frame bounds = %v, want %v", decoded.Bounds(), img.Bounds())
+	}
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 3; x++ {
+			got := color.NRGBAModel.Convert(decoded.At(x, y)).(color.NRGBA)
+			if want := img.NRGBAAt(x, y); got != want {
+				t.Fatalf("stored pixel (%d,%d) = %v, want %v", x, y, got, want)
+			}
+		}
+	}
+
+	metaBytes, err := os.ReadFile(prefix + `frames.jsonl`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta frameMeta
+	if err := json.Unmarshal(bytes.TrimSpace(metaBytes), &meta); err != nil {
+		t.Fatalf("metadata line %q: %v", metaBytes, err)
+	}
+	if meta.File != filepath.Base(pngs[0]) || meta.Width != 3 || meta.Height != 2 ||
+		meta.VideoWidth != 6 || meta.VideoHeight != 4 || meta.Backend != `jab` || meta.PageTimeMS != 1721 {
+		t.Fatalf("metadata = %+v", meta)
+	}
+	if meta.Zoom != 2 || meta.CropZoom != 1.33 {
+		t.Fatalf("metadata zoom = %v crop = %v, want 2 and 1.33", meta.Zoom, meta.CropZoom)
+	}
+	if meta.Seq != 5 || meta.Dropped != 2 {
+		t.Fatalf("metadata seq = %d dropped = %d, want 5 and 2", meta.Seq, meta.Dropped)
+	}
+}
+
+func TestStoreFrameRejectsBadFrames(t *testing.T) {
+	prefix := filepath.Join(t.TempDir(), `field-`)
+	srv, _ := testServerWithFrameStore(t, prefix)
+	handler := srv.mux()
+
+	for name, tc := range map[string]struct {
+		method string
+		target string
+		body   []byte
+		status int
+	}{
+		`get`:             {http.MethodGet, frameStorePath + `?w=1&h=1`, nil, http.StatusMethodNotAllowed},
+		`zero width`:      {http.MethodPost, frameStorePath + `?w=0&h=2`, make([]byte, 8), http.StatusBadRequest},
+		`byte mismatch`:   {http.MethodPost, frameStorePath + `?w=2&h=2`, make([]byte, 8), http.StatusBadRequest},
+		`huge dimensions`: {http.MethodPost, frameStorePath + `?w=100000&h=100000`, make([]byte, 8), http.StatusBadRequest},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.target, bytes.NewReader(tc.body)))
+		if rec.Code != tc.status {
+			t.Errorf("%s: status = %d, want %d", name, rec.Code, tc.status)
+		}
+	}
+	if pngs, _ := filepath.Glob(prefix + `*.png`); len(pngs) != 0 {
+		t.Fatalf("rejected frames were stored: %v", pngs)
+	}
+}
+
+func TestStoreFrameRouteNeedsFlag(t *testing.T) {
+	srv, _ := testServer(t)
+	rec := httptest.NewRecorder()
+	srv.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, frameStorePath+`?w=1&h=1`, bytes.NewReader(make([]byte, 4))))
+	if rec.Code == http.StatusNoContent {
+		t.Fatal("frame store responded without -store-frames")
+	}
+	if rec.Code < http.StatusBadRequest {
+		t.Fatalf("frame store fallthrough status = %d, want an error", rec.Code)
 	}
 }
 
@@ -411,6 +520,7 @@ func TestServerReadSideUsesProvidedFS(t *testing.T) {
 		log.New(io.Discard, ``, 0),
 		false,
 		0,
+		``,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -438,6 +548,7 @@ func TestServerWithoutUploadRootIsReadOnly(t *testing.T) {
 		log.New(io.Discard, ``, 0),
 		false,
 		0,
+		``,
 	)
 	if err != nil {
 		t.Fatal(err)

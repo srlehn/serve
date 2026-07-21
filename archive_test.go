@@ -114,6 +114,7 @@ func TestArchiveDownloadUsesProvidedFSWithoutWritableRoot(t *testing.T) {
 		log.New(io.Discard, ``, 0),
 		false,
 		0,
+		``,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +155,7 @@ func TestArchiveWarningsUseIncompleteFilenameAndStatus(t *testing.T) {
 	}
 	defer root.Close()
 	var logs bytes.Buffer
-	srv, err := newServer(failingOpenFS{root.FS(), `tree/blocked.txt`}, root, log.New(&logs, ``, 0), false, 0)
+	srv, err := newServer(failingOpenFS{root.FS(), `tree/blocked.txt`}, root, log.New(&logs, ``, 0), false, 0, ``)
 	if err != nil {
 		t.Fatal(err)
 	}

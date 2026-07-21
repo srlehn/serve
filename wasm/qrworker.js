@@ -16,10 +16,30 @@ function wlog(message) {
     } catch {}
 }
 
+/* uncaught worker errors otherwise reach the page as a detail-free
+   'error' event; name them here where the detail still exists */
+self.addEventListener('error', e => {
+    wlog('uncaught ' + (e.message || 'error') + ' at ' + (e.filename || '?') + ':' + (e.lineno || 0));
+});
+self.addEventListener('unhandledrejection', e => {
+    const reason = e.reason instanceof Error ? e.reason.name + ': ' + e.reason.message : String(e.reason);
+    wlog('unhandled rejection ' + reason);
+});
+
 const ready = (async () => {
     const started = performance.now();
     importScripts('/wasm_exec.js');
     const go = new Go();
+    /* cap the Go heap: the decode ladder churns tens of MB per
+       high-resolution frame, and an uncapped wasm heap only grows
+       until iOS kills the worker. Near the limit the GC works
+       harder instead. */
+    go.env.GOMEMLIMIT = '512MiB';
+    const exit = go.exit;
+    go.exit = code => {
+        wlog('wasm runtime exited code=' + code);
+        if (exit) exit.call(go, code);
+    };
     const r = await WebAssembly.instantiateStreaming(fetch('/qrstream.wasm'), go.importObject);
     go.run(r.instance);
     wlog('wasm ready ms=' + Math.round(performance.now() - started));

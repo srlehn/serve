@@ -136,7 +136,7 @@
     <button class="camera-open" type="button" data-https-url="{{.HTTPSURL}}"
         data-scanner-id="{{.Scanner.ID}}" data-worker-url="{{.Scanner.WorkerURL}}"
         data-idle-prompt="{{.Scanner.IdlePrompt}}" data-transfer-label="{{.Scanner.TransferLabel}}"
-        data-burst-frames="{{.Scanner.BurstFrames}}"
+        data-burst-frames="{{.Scanner.BurstFrames}}"{{if .FrameStoreURL}} data-frame-store-url="{{.FrameStoreURL}}"{{end}}
         title="receive a file by scanning a {{.Scanner.TransferLabel}} stream with this device's camera"
         aria-label="open {{.Scanner.TransferLabel}} scanner"><svg
         viewBox="0 0 16 16" width="48" height="48" aria-hidden="true"><path fill="currentColor" d="M1 1h4v2H3v2H1zM11 1h4v4h-2V3h-2zM1 11h2v2h2v2H1zM11 15v-2h2v-2h2v4z"/><circle cx="8" cy="8" r="2.5" fill="currentColor"/></svg></button>
@@ -191,7 +191,7 @@
         } catch {}
     }
     window.addEventListener('error', e => {
-        qlog('window error ' + e.message);
+        qlog('window error ' + e.message + ' at ' + (e.filename || '?') + ':' + (e.lineno || 0));
     });
     window.addEventListener('unhandledrejection', e => {
         const reason = e.reason instanceof Error
@@ -517,6 +517,11 @@
             scanResult(e.data);
         });
         worker.addEventListener('error', e => {
+            /* log every worker death, even a stale one: the detail
+               (if any survived) names the crash site */
+            qlog('worker error event ' + (e.message || 'no detail')
+                + ' at ' + (e.filename || '?') + ':' + (e.lineno || 0)
+                + (worker !== scanWorker ? ' (stale worker)' : ''));
             if (worker !== scanWorker) return;
             decoderFailed('decoder stopped: ' + (e.message || 'worker error'));
         });
@@ -525,6 +530,59 @@
             decoderFailed('decoder returned an unreadable result');
         });
         return true;
+    }
+    /* frame store: when the server runs with -store-frames, captured
+       frames are posted as raw RGBA and written server-side as
+       lossless PNGs, so a failing field scan leaves the exact
+       decoder input behind. Uploads are serialized so frames arrive
+       in capture order, and buffered frames keep draining after the
+       camera closes. The buffer absorbs the gap between capture
+       rate and phone uplink up to a byte budget; an unbounded queue
+       grew the tab until iOS killed it in the field. Frames beyond
+       the budget are skipped and counted, visible as seq gaps in
+       the metadata. The pixels are copied at capture time because
+       the original buffer is later transferred to the decoder
+       worker. */
+    const frameStoreURL = cameraButton.dataset.frameStoreUrl || '';
+    const storeBufferLimit = 128 * 1024 * 1024;
+    let storeQueue = Promise.resolve();
+    let storeBuffered = 0; /* bytes waiting to upload or uploading */
+    let storeSeq = 0;
+    let storeDropped = 0;
+    function storeFrame(img) {
+        if (!frameStoreURL) return;
+        storeSeq++;
+        if (storeBuffered + img.data.length > storeBufferLimit) {
+            storeDropped++;
+            return;
+        }
+        const pixels = img.data.slice(0);
+        storeBuffered += pixels.length;
+        const params = new URLSearchParams({
+            w: img.width, h: img.height,
+            vw: video.videoWidth, vh: video.videoHeight,
+            zoom: camZoom.toFixed(2), crop: cropZoom.toFixed(2),
+            backend: scannerBackend.id, t: Date.now(),
+            seq: storeSeq, dropped: storeDropped,
+        });
+        storeQueue = storeQueue.then(() => fetch(frameStoreURL + '?' + params, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: pixels,
+        })).then(r => {
+            if (r && !r.ok) qlog('frame store upload rejected status=' + r.status);
+        }, err => {
+            /* a suspended tab (background, locked phone) kills
+               in-flight uploads; name the loss instead of hiding it */
+            qlog('frame store upload failed ' + (err && err.message || err));
+        }).finally(() => {
+            storeBuffered -= pixels.length;
+            /* after the camera closed, an empty buffer means it is
+               safe to leave the page or lock the phone */
+            if (storeBuffered === 0 && !scanning) {
+                qlog('frame store drained seq=' + storeSeq + ' dropped=' + storeDropped);
+            }
+        });
     }
     /* burst capture: the jab Stream decoder accumulates evidence
        across several looks at the SAME displayed symbol, but one
@@ -678,7 +736,15 @@
         camDialog.showModal();
         loadDecoder();
         try {
-            camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+            /* ask for a high-resolution feed: with no resolution
+               constraint iPhones hand out 480x640, which caps a
+               filled frame at ~4 px/module - below the JAB
+               detector's working range. ideal keeps the request
+               soft (no OverconstrainedError); the 1024 px cap in
+               captureFrame still bounds the decoder input. */
+            camStream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+            });
         } catch (err) {
             qlog('camera request failed ' + err.name + ': ' + err.message);
             camProgress.textContent = 'camera unavailable: ' + err.message;
@@ -737,7 +803,9 @@
             canvas.width = Math.round(sw * scale);
             canvas.height = Math.round(sh * scale);
             ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-            return ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            storeFrame(img);
+            return img;
         }
         scanTimer = setInterval(() => {
             if (!scanning || !video.videoWidth) return;

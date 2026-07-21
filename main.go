@@ -11,10 +11,13 @@ import (
 	"crypto/x509/pkix"
 	_ "embed"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"html/template"
+	"image"
+	"image/png"
 	"io"
 	"io/fs"
 	"log"
@@ -45,6 +48,10 @@ const (
 	httpsPort          = `:8443`
 	maxBarcodeFileSize = 64 << 20
 	maxClientLog       = 16 << 10
+	// maxStoredFramePixels bounds one camera frame posted to the
+	// frame store, mirroring the wasm shim's allocation bound.
+	maxStoredFramePixels = 4096 * 4096
+	frameStorePath       = `/framestore`
 )
 
 type byteSizeValue int64
@@ -145,10 +152,11 @@ type server struct {
 	logger          *log.Logger
 	browserLogging  bool
 	uploadLimit     int64
+	frameStore      *frameStore
 	archiveStatuses archiveStatusStore
 }
 
-func newServer(files fs.FS, uploadRoot *os.Root, logger *log.Logger, browserLogging bool, uploadLimit int64) (*server, error) {
+func newServer(files fs.FS, uploadRoot *os.Root, logger *log.Logger, browserLogging bool, uploadLimit int64, frameStorePrefix string) (*server, error) {
 	if uploadLimit < 0 {
 		return nil, errors.New(`upload limit must not be negative`)
 	}
@@ -166,6 +174,12 @@ func newServer(files fs.FS, uploadRoot *os.Root, logger *log.Logger, browserLogg
 	}
 	if uploadRoot != nil && sameFileSystem(files, uploadRoot.FS()) {
 		s.archiveRoot = uploadRoot
+	}
+	if frameStorePrefix != `` {
+		s.frameStore, err = newFrameStore(frameStorePrefix)
+		if err != nil {
+			return nil, err
+		}
 	}
 	s.browser, err = filebrowser.NewHandler(
 		files,
@@ -193,6 +207,9 @@ func (s *server) mux() *http.ServeMux {
 	if s.browserLogging {
 		mux.HandleFunc("/log", s.clientLog)
 	}
+	if s.frameStore != nil {
+		mux.HandleFunc(frameStorePath, s.storeFrame)
+	}
 	// instantiateStreaming requires the exact wasm content type.
 	mux.HandleFunc("/qrstream.wasm", serveStatic(`application/wasm`, qrWASM))
 	mux.HandleFunc("/jabstream.wasm", serveStatic(`application/wasm`, jabWASM))
@@ -205,6 +222,7 @@ func (s *server) mux() *http.ServeMux {
 
 func main() {
 	browserLogging := flag.Bool(`browser-log`, false, `log browser scanner diagnostics`)
+	storeFrames := flag.String(`store-frames`, ``, `store scanned camera frames as PNGs with this filename prefix, plus a metadata log (trailing / stores into a directory)`)
 	var uploadLimit byteSizeValue
 	flag.Var(&uploadLimit, `upload-limit`, `maximum multipart upload request size, e.g. 500MB or 2GiB (0 is unlimited)`)
 	flag.Parse()
@@ -214,7 +232,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer root.Close()
-	srv, err := newServer(root.FS(), root, log.Default(), *browserLogging, int64(uploadLimit))
+	srv, err := newServer(root.FS(), root, log.Default(), *browserLogging, int64(uploadLimit), *storeFrames)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1042,6 +1060,7 @@ type pageData struct {
 	HTTPSURL       string
 	ShowQR         bool
 	BrowserLogging bool
+	FrameStoreURL  string // empty unless -store-frames is set
 }
 
 func (s *server) page(w http.ResponseWriter, req *http.Request) {
@@ -1094,6 +1113,10 @@ func (s *server) renderDirectory(w io.Writer, req *http.Request, directory fileb
 	if currentName == `.` {
 		currentName = `this directory`
 	}
+	frameStoreURL := ``
+	if s.frameStore != nil {
+		frameStoreURL = frameStorePath
+	}
 	data := pageData{
 		Files:          entries,
 		Backends:       backends,
@@ -1106,6 +1129,7 @@ func (s *server) renderDirectory(w io.Writer, req *http.Request, directory fileb
 		HTTPSURL:       httpsPageURL(req),
 		ShowQR:         !loopbackHost(req.Host) || altHost() != ``,
 		BrowserLogging: s.browserLogging,
+		FrameStoreURL:  frameStoreURL,
 	}
 	return s.template.Execute(w, data)
 }
@@ -1194,6 +1218,150 @@ func (s *server) clientLog(w http.ResponseWriter, req *http.Request) {
 	if message := strings.TrimSpace(string(body)); message != `` {
 		s.logger.Printf("browser message=%q", message)
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// frameStore writes camera frames posted by the scanner page to
+// disk: one lossless PNG per frame named prefix<start>-<n>.png plus
+// one JSON metadata line each in prefixframes.jsonl. The per-process
+// start stamp keeps repeated runs with the same prefix from
+// overwriting each other. It exists for field debugging: a failing
+// scan leaves the exact decoder input behind as replayable fixtures.
+type frameStore struct {
+	prefix string
+	start  string
+	mu     sync.Mutex
+	n      int
+}
+
+func newFrameStore(prefix string) (*frameStore, error) {
+	if dir := filepath.Dir(prefix); dir != `.` {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf(`frame store: %w`, err)
+		}
+	}
+	return &frameStore{prefix: prefix, start: time.Now().Format(`20060102-150405`)}, nil
+}
+
+// frameMeta is the metadata stored with each frame: the page reports
+// capture geometry, the server adds provenance. The file name is
+// relative to the metadata log's own directory.
+type frameMeta struct {
+	File string `json:"file"`
+	Time string `json:"time"`
+	// Seq numbers every page-side capture, stored or skipped, so
+	// gaps in the stored sequence are visible; Dropped is the
+	// running count of frames the page skipped under upload
+	// backpressure.
+	Seq         int64   `json:"seq,omitempty"`
+	Dropped     int64   `json:"dropped,omitempty"`
+	Width       int     `json:"width"`
+	Height      int     `json:"height"`
+	VideoWidth  int     `json:"video_width,omitempty"`
+	VideoHeight int     `json:"video_height,omitempty"`
+	Zoom        float64 `json:"zoom,omitempty"`
+	CropZoom    float64 `json:"crop_zoom,omitempty"`
+	Backend     string  `json:"backend,omitempty"`
+	PageTimeMS  int64   `json:"page_time_ms,omitempty"`
+	UserAgent   string  `json:"user_agent,omitempty"`
+	RemoteAddr  string  `json:"remote_addr,omitempty"`
+}
+
+func (st *frameStore) store(img *image.NRGBA, meta frameMeta) (string, error) {
+	var buf bytes.Buffer
+	// BestSpeed: the store keeps up with a scan session; PNG stays
+	// lossless at every compression level.
+	if err := (&png.Encoder{CompressionLevel: png.BestSpeed}).Encode(&buf, img); err != nil {
+		return ``, err
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.n++
+	name := fmt.Sprintf(`%s%s-%04d.png`, st.prefix, st.start, st.n)
+	if err := os.WriteFile(name, buf.Bytes(), 0o644); err != nil {
+		return ``, err
+	}
+	meta.File = filepath.Base(name)
+	line, err := json.Marshal(meta)
+	if err != nil {
+		return ``, err
+	}
+	f, err := os.OpenFile(st.prefix+`frames.jsonl`, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return ``, err
+	}
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		f.Close()
+		return ``, err
+	}
+	return name, f.Close()
+}
+
+// storeFrame receives one camera frame from the scanner page as raw
+// RGBA bytes (the exact ImageData the decoder worker gets) and hands
+// it to the frame store. Registered only when -store-frames is set.
+func (s *server) storeFrame(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if !sameOrigin(req) {
+		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+		return
+	}
+	query := req.URL.Query()
+	width, _ := strconv.Atoi(query.Get(`w`))
+	height, _ := strconv.Atoi(query.Get(`h`))
+	if width <= 0 || height <= 0 || width > maxStoredFramePixels/height {
+		s.requestError(w, req, http.StatusBadRequest,
+			fmt.Sprintf(`bad frame dimensions %dx%d`, width, height), nil)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, 4*maxStoredFramePixels))
+	if err != nil {
+		status := http.StatusBadRequest
+		message := `could not read the frame`
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			status = http.StatusRequestEntityTooLarge
+			message = `frame is too large`
+		}
+		s.requestError(w, req, status, message, err)
+		return
+	}
+	if len(body) != 4*width*height {
+		s.requestError(w, req, http.StatusBadRequest,
+			fmt.Sprintf(`frame has %d bytes, dimensions %dx%d need %d`, len(body), width, height, 4*width*height), nil)
+		return
+	}
+	img := &image.NRGBA{Pix: body, Stride: 4 * width, Rect: image.Rect(0, 0, width, height)}
+	videoWidth, _ := strconv.Atoi(query.Get(`vw`))
+	videoHeight, _ := strconv.Atoi(query.Get(`vh`))
+	zoom, _ := strconv.ParseFloat(query.Get(`zoom`), 64)
+	cropZoom, _ := strconv.ParseFloat(query.Get(`crop`), 64)
+	pageTime, _ := strconv.ParseInt(query.Get(`t`), 10, 64)
+	seq, _ := strconv.ParseInt(query.Get(`seq`), 10, 64)
+	dropped, _ := strconv.ParseInt(query.Get(`dropped`), 10, 64)
+	name, err := s.frameStore.store(img, frameMeta{
+		Time:        time.Now().Format(time.RFC3339Nano),
+		Seq:         seq,
+		Dropped:     dropped,
+		Width:       width,
+		Height:      height,
+		VideoWidth:  videoWidth,
+		VideoHeight: videoHeight,
+		Zoom:        zoom,
+		CropZoom:    cropZoom,
+		Backend:     query.Get(`backend`),
+		PageTimeMS:  pageTime,
+		UserAgent:   req.UserAgent(),
+		RemoteAddr:  req.RemoteAddr,
+	})
+	if err != nil {
+		s.requestError(w, req, http.StatusInternalServerError, `could not store the frame`, err)
+		return
+	}
+	s.logger.Printf(`stored frame %s seq=%d dropped=%d`, name, seq, dropped)
 	w.WriteHeader(http.StatusNoContent)
 }
 
