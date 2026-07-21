@@ -239,13 +239,27 @@ func main() {
 	}
 }
 
+// hostClass ranks a candidate host by the kind of interface it lives
+// on. The values are the page QR's preference order: a phone scanning
+// the code shares the Wi-Fi first, a wired LAN next, a VPN overlay it
+// might have joined last. A host-local virtual bridge (libvirt,
+// Docker) is never a phone's network and is kept out of the page QR.
+type hostClass int
+
+const (
+	classWireless hostClass = iota
+	classWired
+	classTunnel
+	classVirtual
+)
+
 // hostCandidate is a host another device might reach, labeled with
-// the network interface it belongs to so a VPN or tunnel address is
-// not mistaken for the local-network one.
+// its network interface and classed by interface kind so the page QR
+// can prefer the network a scanning phone shares.
 type hostCandidate struct {
-	host   string // formatted for URLs: IPv6 bracketed
-	iface  string // empty for localhost and the label-less fallback
-	tunnel bool
+	host  string // formatted for URLs: IPv6 bracketed
+	iface string // empty for localhost and the label-less fallback
+	class hostClass
 }
 
 // tunnelInterface reports whether an interface carries VPN or tunnel
@@ -264,18 +278,67 @@ func tunnelInterface(name string, flags net.Flags) bool {
 	return false
 }
 
-// ifaceAddrs is one up interface with its addresses, decoupled from
-// net.Interfaces so candidate collection is testable.
+// virtualInterface reports whether an interface is a host-local
+// virtual bridge or VM link (libvirt, Docker, VirtualBox, VMware). No
+// external device shares such a network, so its addresses stay out of
+// the page QR. The "br-" prefix is Docker's bridge naming; a bare
+// "br0" bridging a physical LAN is deliberately not matched.
+func virtualInterface(name string) bool {
+	for _, prefix := range []string{`virbr`, `docker`, `br-`, `veth`, `vnet`, `vboxnet`, `vmnet`} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// wirelessInterface reports whether an interface is Wi-Fi. Linux marks
+// wireless devices in sysfs (a "wireless" attribute directory and a
+// "phy80211" link); elsewhere, and as a fallback, conventional name
+// prefixes are used.
+func wirelessInterface(name string) bool {
+	for _, marker := range []string{`phy80211`, `wireless`} {
+		if _, err := os.Stat(`/sys/class/net/` + name + `/` + marker); err == nil {
+			return true
+		}
+	}
+	for _, prefix := range []string{`wl`, `wifi`, `ath`, `ra`, `iwn`, `iwm`} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// interfaceClass classifies an interface for the page QR preference
+// order. Virtual bridges are checked first so a Docker or libvirt
+// bridge is never mistaken for a LAN, then tunnels, then Wi-Fi;
+// anything else is treated as a wired LAN.
+func interfaceClass(name string, flags net.Flags) hostClass {
+	switch {
+	case virtualInterface(name):
+		return classVirtual
+	case tunnelInterface(name, flags):
+		return classTunnel
+	case wirelessInterface(name):
+		return classWireless
+	default:
+		return classWired
+	}
+}
+
+// ifaceAddrs is one up interface with its addresses and class,
+// decoupled from net.Interfaces so candidate collection is testable.
 type ifaceAddrs struct {
 	name  string
-	flags net.Flags
+	class hostClass
 	ips   []net.IP
 }
 
 func localIfaceAddrs() []ifaceAddrs {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		// Fall back to unlabeled addresses rather than none.
+		// Fall back to unlabeled wired addresses rather than none.
 		var ips []net.IP
 		if addrs, err := net.InterfaceAddrs(); err == nil {
 			for _, a := range addrs {
@@ -284,7 +347,7 @@ func localIfaceAddrs() []ifaceAddrs {
 				}
 			}
 		}
-		return []ifaceAddrs{{ips: ips}}
+		return []ifaceAddrs{{class: classWired, ips: ips}}
 	}
 	var out []ifaceAddrs
 	for _, ifc := range ifaces {
@@ -295,7 +358,7 @@ func localIfaceAddrs() []ifaceAddrs {
 		if err != nil {
 			continue
 		}
-		ia := ifaceAddrs{name: ifc.Name, flags: ifc.Flags}
+		ia := ifaceAddrs{name: ifc.Name, class: interfaceClass(ifc.Name, ifc.Flags)}
 		for _, a := range addrs {
 			if n, ok := a.(*net.IPNet); ok {
 				ia.ips = append(ia.ips, n.IP)
@@ -319,45 +382,46 @@ func defaultRouteIP() net.IP {
 	return c.LocalAddr().(*net.UDPAddr).IP
 }
 
-// candidateHosts lists hosts another device might reach, in
-// preference order: LAN IPv4 before tunnel IPv4 with the
-// default-route address first within its group, then IPv6 the same
-// way (bracketed; link-local excluded - its zone does not transfer
-// to another device), localhost last.
+// candidateHosts lists hosts another device might reach, in the page
+// QR's preference order: Wi-Fi first, then wired LAN, then VPN or
+// tunnel, then host-local virtual bridges, with IPv4 before IPv6 and
+// the default-route address leading its group (bracketed for IPv6;
+// link-local excluded - its zone does not transfer to another
+// device); localhost last.
 func candidateHosts() []hostCandidate {
 	return collectHostCandidates(defaultRouteIP(), localIfaceAddrs())
 }
 
 func collectHostCandidates(defaultRoute net.IP, ifaces []ifaceAddrs) []hostCandidate {
-	// group order: LAN IPv4, tunnel IPv4, LAN IPv6, tunnel IPv6
-	var groups [4][]hostCandidate
+	// Groups run wireless, wired, tunnel, virtual - the page QR's
+	// preference order - each split IPv4 before IPv6. Virtual bridge
+	// addresses are collected for the terminal listing and the
+	// certificate but dropped from the page QR pool by printURL.
+	var groups [8][]hostCandidate
 	seen := make(map[string]bool)
 	for _, ifc := range ifaces {
-		tunnel := tunnelInterface(ifc.name, ifc.flags)
 		for _, ip := range ifc.ips {
 			if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast() {
 				continue
 			}
-			host, group := ip.String(), 0
+			host, ver := ip.String(), 0
 			if ip.To4() == nil {
-				host, group = `[`+host+`]`, 2
-			}
-			if tunnel {
-				group++
+				host, ver = `[`+host+`]`, 1
 			}
 			if seen[host] {
 				continue
 			}
 			seen[host] = true
-			c := hostCandidate{host: host, iface: ifc.name, tunnel: tunnel}
+			g := int(ifc.class)*2 + ver
+			c := hostCandidate{host: host, iface: ifc.name, class: ifc.class}
 			if ip.Equal(defaultRoute) {
-				groups[group] = append([]hostCandidate{c}, groups[group]...)
+				groups[g] = append([]hostCandidate{c}, groups[g]...)
 			} else {
-				groups[group] = append(groups[group], c)
+				groups[g] = append(groups[g], c)
 			}
 		}
 	}
-	out := slices.Concat(groups[0], groups[1], groups[2], groups[3])
+	out := slices.Concat(groups[0], groups[1], groups[2], groups[3], groups[4], groups[5], groups[6], groups[7])
 	return append(out, hostCandidate{host: `localhost`})
 }
 
@@ -385,6 +449,12 @@ func altHost() string {
 // downed bridge); which of the remaining addresses another device
 // can actually reach is unknowable from here, hence QRs per
 // candidate. Survivors are remembered for the loopback QR fallback.
+//
+// The barcoded candidates are collected best first but printed worst
+// first, so the top-preference codes are the ones left on screen at
+// the cursor. localhost is pinned last of all: it carries no barcode,
+// so its two short lines stay at the cursor for running locally
+// without pushing the good codes off screen.
 func printURL() {
 	hosts := candidateHosts()
 	reachable := make([]bool, len(hosts))
@@ -399,15 +469,16 @@ func printURL() {
 		})
 	}
 	wg.Wait()
+	// Remember the reachable non-virtual hosts for the loopback QR
+	// fallback in preference order, best first.
+	alt.Lock()
 	for i, h := range hosts {
-		if !reachable[i] {
-			continue
-		}
-		if h.host != `localhost` {
-			alt.Lock()
+		if reachable[i] && h.host != `localhost` && h.class != classVirtual {
 			alt.hosts = append(alt.hosts, h.host)
-			alt.Unlock()
 		}
+	}
+	alt.Unlock()
+	printHost := func(h hostCandidate) {
 		for _, u := range []string{`http://` + h.host + httpPort + `/`, `https://` + h.host + httpsPort + `/`} {
 			if h.host != `localhost` {
 				if q, err := qrText(u); err == nil {
@@ -417,17 +488,32 @@ func printURL() {
 			fmt.Println(u + hostLabel(h))
 		}
 	}
+	// Barcoded hosts worst first, then localhost last so its short,
+	// barcode-less lines stay at the cursor.
+	for i, h := range slices.Backward(hosts) {
+		if reachable[i] && h.host != `localhost` {
+			printHost(h)
+		}
+	}
+	for i, h := range hosts {
+		if reachable[i] && h.host == `localhost` {
+			printHost(h)
+		}
+	}
 }
 
 // hostLabel renders the interface suffix printed after a URL, e.g.
-// " (eth0)" or " (tailscale0, VPN/tunnel)".
+// " (eth0)", " (tailscale0, VPN/tunnel)", or " (virbr0, virtual)".
 func hostLabel(h hostCandidate) string {
 	if h.iface == `` {
 		return ``
 	}
 	label := ` (` + h.iface
-	if h.tunnel {
+	switch h.class {
+	case classTunnel:
 		label += `, VPN/tunnel`
+	case classVirtual:
+		label += `, virtual`
 	}
 	return label + `)`
 }

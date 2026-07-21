@@ -1004,30 +1004,33 @@ func TestTunnelInterface(t *testing.T) {
 
 func TestCollectHostCandidates(t *testing.T) {
 	ifaces := []ifaceAddrs{
-		{name: `lo`, flags: net.FlagUp | net.FlagLoopback, ips: []net.IP{net.ParseIP(`127.0.0.1`), net.ParseIP(`::1`)}},
-		{name: `eth0`, flags: net.FlagUp | net.FlagBroadcast, ips: []net.IP{
+		{name: `lo`, class: classWired, ips: []net.IP{net.ParseIP(`127.0.0.1`), net.ParseIP(`::1`)}},
+		{name: `eth0`, class: classWired, ips: []net.IP{
 			net.ParseIP(`192.168.1.5`),
 			net.ParseIP(`fe80::1`),
 			net.ParseIP(`2001:db8::5`),
 		}},
-		{name: `tailscale0`, flags: net.FlagUp | net.FlagPointToPoint, ips: []net.IP{
+		{name: `tailscale0`, class: classTunnel, ips: []net.IP{
 			net.ParseIP(`100.64.0.3`),
 			net.ParseIP(`fd7a:115c:a1e0::3`),
 		}},
-		{name: `wlan0`, flags: net.FlagUp | net.FlagBroadcast, ips: []net.IP{
+		{name: `virbr0`, class: classVirtual, ips: []net.IP{net.ParseIP(`192.168.122.1`)}},
+		{name: `wlan0`, class: classWireless, ips: []net.IP{
 			net.ParseIP(`10.0.0.7`),
 			net.ParseIP(`10.0.0.7`), // duplicate must not repeat
 		}},
 	}
-	// The default route leaves via wlan0, so its address must lead
-	// even though eth0 is listed first.
+	// wlan0 is Wi-Fi so it leads regardless of listing order; the
+	// wired addresses follow, then the tunnel, then the virtual bridge
+	// last (kept for the terminal and certificate, not the page QR).
 	got := collectHostCandidates(net.ParseIP(`10.0.0.7`), ifaces)
 	want := []hostCandidate{
-		{host: `10.0.0.7`, iface: `wlan0`},
-		{host: `192.168.1.5`, iface: `eth0`},
-		{host: `100.64.0.3`, iface: `tailscale0`, tunnel: true},
-		{host: `[2001:db8::5]`, iface: `eth0`},
-		{host: `[fd7a:115c:a1e0::3]`, iface: `tailscale0`, tunnel: true},
+		{host: `10.0.0.7`, iface: `wlan0`, class: classWireless},
+		{host: `192.168.1.5`, iface: `eth0`, class: classWired},
+		{host: `[2001:db8::5]`, iface: `eth0`, class: classWired},
+		{host: `100.64.0.3`, iface: `tailscale0`, class: classTunnel},
+		{host: `[fd7a:115c:a1e0::3]`, iface: `tailscale0`, class: classTunnel},
+		{host: `192.168.122.1`, iface: `virbr0`, class: classVirtual},
 		{host: `localhost`},
 	}
 	if len(got) != len(want) {
@@ -1046,11 +1049,60 @@ func TestHostLabel(t *testing.T) {
 		want      string
 	}{
 		{hostCandidate{host: `localhost`}, ``},
-		{hostCandidate{host: `192.168.1.5`, iface: `eth0`}, ` (eth0)`},
-		{hostCandidate{host: `100.64.0.3`, iface: `tailscale0`, tunnel: true}, ` (tailscale0, VPN/tunnel)`},
+		{hostCandidate{host: `192.168.1.5`, iface: `eth0`, class: classWired}, ` (eth0)`},
+		{hostCandidate{host: `10.0.0.7`, iface: `wlan0`, class: classWireless}, ` (wlan0)`},
+		{hostCandidate{host: `100.64.0.3`, iface: `tailscale0`, class: classTunnel}, ` (tailscale0, VPN/tunnel)`},
+		{hostCandidate{host: `192.168.122.1`, iface: `virbr0`, class: classVirtual}, ` (virbr0, virtual)`},
 	} {
 		if got := hostLabel(tt.candidate); got != tt.want {
 			t.Errorf("hostLabel(%#v) = %q, want %q", tt.candidate, got, tt.want)
+		}
+	}
+}
+
+func TestVirtualInterface(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		virtual bool
+	}{
+		{`virbr0`, true},
+		{`docker0`, true},
+		{`br-1a2b3c4d5e6f`, true},
+		{`veth9f3a1b`, true},
+		{`vnet3`, true},
+		{`vboxnet0`, true},
+		{`vmnet8`, true},
+		{`eth0`, false},
+		{`wlan0`, false},
+		{`br0`, false}, // a bridge over a physical LAN is not host-local
+		{`tailscale0`, false},
+	} {
+		if got := virtualInterface(tt.name); got != tt.virtual {
+			t.Errorf("virtualInterface(%q) = %t, want %t", tt.name, got, tt.virtual)
+		}
+	}
+}
+
+func TestInterfaceClass(t *testing.T) {
+	// Names are chosen so the class is decided by prefix or flags, not
+	// by the machine's real sysfs, keeping the test deterministic.
+	for _, tt := range []struct {
+		name  string
+		flags net.Flags
+		class hostClass
+	}{
+		{`wlan0`, net.FlagUp | net.FlagBroadcast, classWireless},
+		{`wlp2s0`, net.FlagUp | net.FlagBroadcast, classWireless},
+		{`eth0`, net.FlagUp | net.FlagBroadcast, classWired},
+		{`enp3s0`, net.FlagUp | net.FlagBroadcast, classWired},
+		{`tailscale0`, net.FlagUp | net.FlagPointToPoint, classTunnel},
+		{`wg0`, net.FlagUp | net.FlagPointToPoint, classTunnel},
+		{`tun0`, net.FlagUp, classTunnel},
+		{`virbr0`, net.FlagUp | net.FlagBroadcast, classVirtual},
+		{`docker0`, net.FlagUp | net.FlagBroadcast, classVirtual},
+	} {
+		if got := interfaceClass(tt.name, tt.flags); got != tt.class {
+			t.Errorf("interfaceClass(%q, %v) = %d, want %d", tt.name, tt.flags, got, tt.class)
 		}
 	}
 }
