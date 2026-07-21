@@ -43,6 +43,15 @@ func main() {
 	var lastID uint32 // most recently completed stream
 	var haveLast bool
 
+	// The frame buffer is reused while the dimensions stay stable:
+	// camera frames arrive at one fixed size, and a fresh
+	// multi-megabyte allocation per frame grows the wasm heap faster
+	// than the collector returns garbage. The Stream decoder copies
+	// everything it carries across calls (working bitmaps, remembered
+	// geometry, observation snapshots) and holds no reference into
+	// the input pixels once DecodeMessage returns, so reuse is safe.
+	var img *image.RGBA
+
 	reset := func() {
 		if collecting {
 			c.Forget(curID)
@@ -71,7 +80,9 @@ func main() {
 		if w <= 0 || h <= 0 || w > maxFramePixels/h {
 			return miss(fmt.Sprintf(`bad frame dimensions %dx%d`, w, h))
 		}
-		img := image.NewRGBA(image.Rect(0, 0, w, h))
+		if img == nil || img.Rect.Dx() != w || img.Rect.Dy() != h {
+			img = image.NewRGBA(image.Rect(0, 0, w, h))
+		}
 		if n := js.CopyBytesToGo(img.Pix, imageData.Get(`data`)); n != len(img.Pix) {
 			return miss(fmt.Sprintf(`pixel copy %d of %d bytes`, n, len(img.Pix)))
 		}

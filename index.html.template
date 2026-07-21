@@ -588,13 +588,16 @@
        across several looks at the SAME displayed symbol, but one
        decode takes longer than the sender shows a frame. So a burst
        of frames is grabbed in quick succession (spanning about one
-       display period) and fed to the decoder in sequence; the whole
-       burst is dropped when its time budget runs out or one of its
-       frames decodes. Single-shot decoders use bursts of 1. */
-    const burstBudgetMillis = 5000;
+       display period) and fed to the decoder in sequence. Captured
+       frames always reach the decoder, however long that takes: its
+       evidence admission has no staleness clock, so a late frame
+       still contributes, while a dropped one is evidence thrown
+       away. The queue stays bounded anyway - the next burst starts
+       only once the current one has drained. A burst is discarded
+       only when one of its frames decodes; the rest show the same,
+       now-recognized symbol. Single-shot decoders use bursts of 1. */
     let burst = [];       // captured frames waiting for the worker
     let burstCapture = 0; // frames still to capture for this burst
-    let burstStarted = 0;
     function dropBurst() {
         burst = [];
         burstCapture = 0;
@@ -819,14 +822,9 @@
                     return;
                 }
                 if (scanBusy) return;
-                if (burst.length && performance.now() - burstStarted > burstBudgetMillis) {
-                    qlog('burst dropped after budget');
-                    dropBurst();
-                }
                 if (!burst.length) {
                     /* start the next burst; the first frame is
                        captured on this tick */
-                    burstStarted = performance.now();
                     burstCapture = scannerBackend.burstFrames - 1;
                     burst.push(captureFrame());
                     if (burstCapture > 0) return;
