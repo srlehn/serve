@@ -31,19 +31,36 @@ func main() {
 }
 
 func run() error {
-	// One generator run owns every scanner module: both builds and
-	// the shared loader succeed or fail as a single operation. The
-	// wasm and the wasm_exec.js it must match both come from goBin, so
-	// they can never disagree on the Go runtime version.
-	goBin := goTool()
-	if err := buildWasm(goBin, `wasm/qrstream.wasm`, `./wasm/qrshim`); err != nil {
-		return err
+	mode := `all`
+	if len(os.Args) > 1 {
+		mode = os.Args[1]
 	}
-	// The JAB decoder compiles with the high-color capabilities so
-	// the browser reads every mode the sender can emit.
-	if err := buildWasm(goBin, `wasm/jabstream.wasm`, `./wasm/jabshim`,
-		`-tags=jabcode_non_iso_encode,jabcode_high_color`); err != nil {
-		return err
+	goBin := goTool()
+	var modules []string
+	switch mode {
+	case `all`:
+		if err := buildWasm(goBin, `wasm/qrstream.wasm`, `./wasm/qrshim`); err != nil {
+			return err
+		}
+		if err := buildWasm(goBin, `wasm/jabstream.wasm`, `./wasm/jabshim`,
+			`-tags=jabcode_non_iso_encode,jabcode_high_color`); err != nil {
+			return err
+		}
+		modules = []string{`wasm/qrstream.wasm`, `wasm/jabstream.wasm`}
+	case `qr`:
+		if err := buildWasm(goBin, `wasm/qrstream.wasm`, `./wasm/qrshim`); err != nil {
+			return err
+		}
+		modules = []string{`wasm/qrstream.wasm`}
+	case `jab`:
+		if err := buildWasm(goBin, `wasm/jabstream.wasm`, `./wasm/jabshim`,
+			`-tags=jabcode_non_iso_encode,jabcode_high_color`); err != nil {
+			return err
+		}
+		modules = []string{`wasm/jabstream.wasm`}
+	case `loader`:
+	default:
+		return fmt.Errorf(`unknown wasm generation target %q`, mode)
 	}
 	root, err := output(goBin, `env`, `GOROOT`)
 	if err != nil {
@@ -53,7 +70,7 @@ func run() error {
 	if _, err := os.Stat(js); err != nil {
 		js = filepath.Join(root, `misc`, `wasm`, `wasm_exec.js`)
 	}
-	return done(goBin, js)
+	return done(goBin, js, modules...)
 }
 
 // goTool picks the Go toolchain the same way the Makefile does: an
@@ -83,7 +100,7 @@ func output(name string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-func done(toolchain, loaderJS string) error {
+func done(toolchain, loaderJS string, modules ...string) error {
 	src, err := os.ReadFile(loaderJS)
 	if err != nil {
 		return err
@@ -91,7 +108,7 @@ func done(toolchain, loaderJS string) error {
 	if err := os.WriteFile(`wasm/wasm_exec.js`, src, 0o644); err != nil {
 		return err
 	}
-	for _, module := range []string{`wasm/qrstream.wasm`, `wasm/jabstream.wasm`} {
+	for _, module := range modules {
 		fi, err := os.Stat(module)
 		if err != nil {
 			return err

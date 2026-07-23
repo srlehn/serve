@@ -19,6 +19,8 @@ export GO
 GOEXPERIMENT ?= simd
 export GOEXPERIMENT
 
+UPX ?= upx
+
 # Flags for every final/release Go build: strip the symbol table and
 # DWARF debug info (-s -w) and drop absolute build paths for a
 # reproducible binary (-trimpath). CGO_ENABLED=0 (set per recipe)
@@ -36,22 +38,30 @@ GOTAGS ?= jabcode_non_iso_encode,jabcode_high_color
 
 WASM      := wasm/qrstream.wasm wasm/jabstream.wasm
 WASM_EXEC := wasm/wasm_exec.js
-# the wasm modules embed their shims and decoder packages (minus tests)
-WASM_SRC := go.mod go.sum wasm/qrshim/main.go wasm/jabshim/main.go wasm/generate.go \
-            $(filter-out %_test.go,$(wildcard qrstream/*.go jabstream/*.go))
+# Each wasm target owns only its decoder and shim sources, so a QR-only
+# generation does not rebuild JAB and vice versa.
+QR_WASM_SRC := go.mod go.sum wasm/qrshim/main.go wasm/generate.go \
+               $(filter-out %_test.go,$(wildcard qrstream/*.go))
+JAB_WASM_SRC := go.mod go.sum wasm/jabshim/main.go wasm/generate.go \
+                $(filter-out %_test.go,$(wildcard jabstream/*.go))
 
 .PHONY: all build run test clean
 
 all: build
 
-# Used by run/test: regenerated only when the shim or qrstream
-# sources change. The grouped target records that one generator run
-# writes both the wasm and its matching wasm_exec.js loader.
+# Used by run/test: each scanner module is regenerated only when its own
+# shim or decoder sources change. Both commands copy the matching loader.
 # wasm/generate.go uses the regular Go toolchain only - TinyGo is
 # banned (its GC never runs finalizers, so syscall/js leaked every
 # camera frame and crashed the iOS scanner; details in generate.go).
-$(WASM) $(WASM_EXEC) &: $(WASM_SRC)
-	$(GO) run wasm/generate.go
+$(WASM_EXEC): go.mod go.sum wasm/generate.go
+	$(GO) run wasm/generate.go loader
+
+wasm/qrstream.wasm: $(QR_WASM_SRC)
+	$(GO) run wasm/generate.go qr
+
+wasm/jabstream.wasm: $(JAB_WASM_SRC)
+	$(GO) run wasm/generate.go jab
 
 # build always runs go generate (the //go:generate directive in
 # main.go runs wasm/generate.go), so a release build can never embed
@@ -60,11 +70,12 @@ $(WASM) $(WASM_EXEC) &: $(WASM_SRC)
 build:
 	$(GO) generate
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS_RELEASE) -tags '$(GOTAGS)' -o serve .
+	$(UPX) --ultra-brute serve
 
-run: $(WASM_EXEC)
+run: $(WASM) $(WASM_EXEC)
 	$(GO) run -tags '$(GOTAGS)' .
 
-test: $(WASM_EXEC)
+test: $(WASM) $(WASM_EXEC)
 	$(GO) vet -tags '$(GOTAGS)' ./...
 	$(GO) test -tags '$(GOTAGS)' ./...
 
