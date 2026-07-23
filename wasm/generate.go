@@ -32,17 +32,20 @@ func main() {
 
 func run() error {
 	// One generator run owns every scanner module: both builds and
-	// the shared loader succeed or fail as a single operation.
-	if err := buildWasm(`wasm/qrstream.wasm`, `./wasm/qrshim`); err != nil {
+	// the shared loader succeed or fail as a single operation. The
+	// wasm and the wasm_exec.js it must match both come from goBin, so
+	// they can never disagree on the Go runtime version.
+	goBin := goTool()
+	if err := buildWasm(goBin, `wasm/qrstream.wasm`, `./wasm/qrshim`); err != nil {
 		return err
 	}
 	// The JAB decoder compiles with the high-color capabilities so
 	// the browser reads every mode the sender can emit.
-	if err := buildWasm(`wasm/jabstream.wasm`, `./wasm/jabshim`,
+	if err := buildWasm(goBin, `wasm/jabstream.wasm`, `./wasm/jabshim`,
 		`-tags=jabcode_non_iso_encode,jabcode_high_color`); err != nil {
 		return err
 	}
-	root, err := output(`go`, `env`, `GOROOT`)
+	root, err := output(goBin, `env`, `GOROOT`)
 	if err != nil {
 		return err
 	}
@@ -50,13 +53,26 @@ func run() error {
 	if _, err := os.Stat(js); err != nil {
 		js = filepath.Join(root, `misc`, `wasm`, `wasm_exec.js`)
 	}
-	return done(`go`, js)
+	return done(goBin, js)
 }
 
-func buildWasm(out, pkg string, extraFlags ...string) error {
+// goTool picks the Go toolchain the same way the Makefile does: an
+// explicit $GO wins, then go1.27rc2 when it is on PATH (jabcode's SIMD
+// kernels target the Go 1.27 API), then plain go.
+func goTool() string {
+	if g := os.Getenv(`GO`); g != `` {
+		return g
+	}
+	if p, err := exec.LookPath(`go1.27rc2`); err == nil {
+		return p
+	}
+	return `go`
+}
+
+func buildWasm(goBin, out, pkg string, extraFlags ...string) error {
 	args := append([]string{`build`, `-trimpath`, `-ldflags=-s -w`}, extraFlags...)
 	args = append(args, `-o`, out, pkg)
-	c := exec.Command(`go`, args...)
+	c := exec.Command(goBin, args...)
 	c.Env = append(os.Environ(), `GOOS=js`, `GOARCH=wasm`)
 	c.Stdout, c.Stderr = os.Stdout, os.Stderr
 	return c.Run()

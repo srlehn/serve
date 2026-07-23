@@ -5,7 +5,19 @@
 # its sources, so `make build`/`make run` always embed a current copy
 # and it can never go stale.
 
-GO ?= go
+# Go toolchain, in priority order: an explicit $GO, then go1.27rc2 when
+# it is on PATH (jabcode's SIMD kernels target the Go 1.27 API), then go.
+# Exported so wasm/generate.go picks the same toolchain for the wasm
+# build and the matching wasm_exec.js it copies out.
+GO ?= $(shell command -v go1.27rc2 >/dev/null 2>&1 && echo go1.27rc2 || echo go)
+export GO
+
+# jabcode's SIMD decode kernels sit behind the goexperiment.simd build
+# tag (scalar fallback otherwise); GOEXPERIMENT=simd enables them in the
+# host serve binary. Exported so every go invocation here agrees (the
+# wasm build carries it inertly - SIMD is arch-gated off js/wasm).
+GOEXPERIMENT ?= simd
+export GOEXPERIMENT
 
 # Flags for every final/release Go build: strip the symbol table and
 # DWARF debug info (-s -w) and drop absolute build paths for a
