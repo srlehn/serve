@@ -1,4 +1,4 @@
-//go:build ignore
+//go:build generate
 
 // Builds the browser-side qrstream decoder (wasm/qrstream.wasm) and
 // the matching JS loader (wasm/wasm_exec.js - the toolchain ships
@@ -42,8 +42,7 @@ func run() error {
 		if err := buildWasm(goBin, `wasm/qrstream.wasm`, `./wasm/qrshim`); err != nil {
 			return err
 		}
-		if err := buildWasm(goBin, `wasm/jabstream.wasm`, `./wasm/jabshim`,
-			`-tags=jabcode_non_iso_encode,jabcode_high_color`); err != nil {
+		if err := buildWasm(goBin, `wasm/jabstream.wasm`, `./wasm/jabshim`, jabWasmFlags()...); err != nil {
 			return err
 		}
 		modules = []string{`wasm/qrstream.wasm`, `wasm/jabstream.wasm`}
@@ -54,7 +53,7 @@ func run() error {
 		modules = []string{`wasm/qrstream.wasm`}
 	case `jab`:
 		if err := buildWasm(goBin, `wasm/jabstream.wasm`, `./wasm/jabshim`,
-			`-tags=jabcode_non_iso_encode,jabcode_high_color`); err != nil {
+			jabWasmFlags()...); err != nil {
 			return err
 		}
 		modules = []string{`wasm/jabstream.wasm`}

@@ -129,7 +129,6 @@ var styleCSS []byte
 // the camera scanners: the qrstream and jabstream decoders compiled
 // to wasm plus the shared JS loader. Rebuild with go generate.
 //
-//go:generate go run wasm/generate.go
 var (
 	//go:embed wasm/qrstream.wasm
 	qrWASM []byte

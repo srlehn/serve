@@ -28,24 +28,24 @@ UPX ?= upx
 # built with the same -trimpath/-s/-w in wasm/generate.go.
 GOFLAGS_RELEASE := -trimpath -ldflags='-s -w'
 
-# Optional jabcode capabilities compiled into serve. The
-# jabcode_non_iso_encode tag enables the experimental 16- and
-# 32-color JAB sender modes (camera-marginal at 32; the untagged
-# build stops at the 8-color ISO modes); jabcode_high_color is its
-# decoder-side twin, needed by anything that reads high-color
-# symbols (the future JAB wasm scanner module).
-GOTAGS ?= jabcode_non_iso_encode,jabcode_high_color
+# The default build is ISO-only: the untagged jabcode decoder does not carry
+# legacy or high-color detection paths, and the encoder stops at ISO modes.
+# High-color encoding and decoding are opt-in through build-high-color.
 
 WASM      := wasm/qrstream.wasm wasm/jabstream.wasm
 WASM_EXEC := wasm/wasm_exec.js
 # Each wasm target owns only its decoder and shim sources, so a QR-only
 # generation does not rebuild JAB and vice versa.
-QR_WASM_SRC := go.mod go.sum wasm/qrshim/main.go wasm/generate.go \
+QR_WASM_SRC := go.mod go.sum generate_iso.go generate_high_color.go \
+               wasm/qrshim/main.go wasm/generate.go wasm/generate_iso.go \
+               wasm/generate_high_color.go \
                $(filter-out %_test.go,$(wildcard qrstream/*.go))
-JAB_WASM_SRC := go.mod go.sum wasm/jabshim/main.go wasm/generate.go \
+JAB_WASM_SRC := go.mod go.sum generate_iso.go generate_high_color.go \
+                wasm/jabshim/main.go wasm/generate.go wasm/generate_iso.go \
+                wasm/generate_high_color.go \
                 $(filter-out %_test.go,$(wildcard jabstream/*.go))
 
-.PHONY: all build run test clean
+.PHONY: all build build-high-color run run-high-color test test-high-color clean
 
 all: build
 
@@ -54,14 +54,15 @@ all: build
 # wasm/generate.go uses the regular Go toolchain only - TinyGo is
 # banned (its GC never runs finalizers, so syscall/js leaked every
 # camera frame and crashed the iOS scanner; details in generate.go).
-$(WASM_EXEC): go.mod go.sum wasm/generate.go
-	$(GO) run wasm/generate.go loader
+$(WASM_EXEC): go.mod go.sum generate_iso.go generate_high_color.go wasm/generate.go \
+	wasm/generate_iso.go wasm/generate_high_color.go
+	$(GO) run -tags=generate ./wasm loader
 
 wasm/qrstream.wasm: $(QR_WASM_SRC)
-	$(GO) run wasm/generate.go qr
+	$(GO) run -tags=generate ./wasm qr
 
 wasm/jabstream.wasm: $(JAB_WASM_SRC)
-	$(GO) run wasm/generate.go jab
+	$(GO) run -tags=generate ./wasm jab
 
 # build always runs go generate (the //go:generate directive in
 # main.go runs wasm/generate.go), so a release build can never embed
@@ -69,15 +70,27 @@ wasm/jabstream.wasm: $(JAB_WASM_SRC)
 # (e.g. vendored deps or a toolchain switch).
 build:
 	$(GO) generate
-	CGO_ENABLED=0 $(GO) build $(GOFLAGS_RELEASE) -tags '$(GOTAGS)' -o serve .
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS_RELEASE) -o serve .
+	$(UPX) --ultra-brute serve
+
+build-high-color:
+	$(GO) generate -tags=jabcode_high_color
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS_RELEASE) -tags=jabcode_non_iso_encode,jabcode_high_color -o serve .
 	$(UPX) --ultra-brute serve
 
 run: $(WASM) $(WASM_EXEC)
-	$(GO) run -tags '$(GOTAGS)' .
+	$(GO) run .
+
+run-high-color:
+	$(GO) run -tags=jabcode_non_iso_encode,jabcode_high_color .
 
 test: $(WASM) $(WASM_EXEC)
-	$(GO) vet -tags '$(GOTAGS)' ./...
-	$(GO) test -tags '$(GOTAGS)' ./...
+	$(GO) vet ./...
+	$(GO) test ./...
+
+test-high-color:
+	$(GO) vet -tags=jabcode_non_iso_encode,jabcode_high_color ./...
+	$(GO) test -tags=jabcode_non_iso_encode,jabcode_high_color ./...
 
 clean:
 	rm -f -- serve $(WASM) $(WASM_EXEC)
