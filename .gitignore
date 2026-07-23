@@ -1,6 +1,7 @@
 /webserve
 /serve
 /serve.upx
+/serve.[0-9][0-9][0-9]
 /go.work
 /go.work.sum
 *.code-workspace
