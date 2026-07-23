@@ -782,6 +782,15 @@ func TestUploadPageUsesControlledSubmission(t *testing.T) {
 			t.Errorf("page still contains %q", unwanted)
 		}
 	}
+	if len(jabstream.SupportedColors()) > 2 {
+		for _, want := range []string{`id="jabOptions"`, `id="jabColors"`, `JAB Code colors`} {
+			if !strings.Contains(body, want) {
+				t.Errorf("high-color page does not contain %q", want)
+			}
+		}
+	} else if strings.Contains(body, `id="jabOptions"`) {
+		t.Error("ISO-only page contains the high-color selector")
+	}
 }
 
 func TestCameraScannerProvidesRecoveryUI(t *testing.T) {

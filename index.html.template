@@ -145,7 +145,13 @@
             <img alt="QR codes" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">
             <p class="qr-status" role="status" aria-live="polite" hidden></p>
         </div>
-        <p class="qr-caption"></p>
+        <div class="qr-caption-row">
+            <p class="qr-caption"></p>
+            {{if gt (len .JABColors) 2}}<div class="qr-options" id="jabOptions" hidden>
+                <label for="jabColors">JAB Code colors</label>
+                <select id="jabColors">{{range .JABColors}}<option value="{{.}}"{{if eq . 8}} selected{{end}}>{{.}}</option>{{end}}</select>
+            </div>{{end}}
+        </div>
     </dialog>
     <dialog class="camera-dialog" aria-labelledby="camera-title">
         <div class="camera-shell">
@@ -345,6 +351,9 @@
     const stream = qrDialog.querySelector('img');
     const caption = qrDialog.querySelector('.qr-caption');
     const qrStatus = qrDialog.querySelector('.qr-status');
+    const jabOptions = qrDialog.querySelector('#jabOptions');
+    const jabColors = qrDialog.querySelector('#jabColors');
+    let activeBarcodeLink;
     let qrPrepareTimer, qrPollTimer;
     /* a decoded stream frame gives the img a real intrinsic size; the
        blank gif swapped in on close is 1x1, so >1 means a frame shows */
@@ -357,6 +366,13 @@
         qrStatus.hidden = true;
         qrStatus.textContent = '';
     }
+    function barcodeURL(link) {
+        const target = new URL(link.href, location.href);
+        if (link.dataset.transportId === 'jab' && jabColors) {
+            target.searchParams.set('colors', jabColors.value);
+        }
+        return target.href;
+    }
     for (const link of document.querySelectorAll('.barcode-transfer')) {
         link.addEventListener('click', e => {
             e.preventDefault();
@@ -368,6 +384,8 @@
             const leaf = decodeURIComponent(link.pathname.split('/').pop());
             const name = leaf === '.' ? 'this directory' : leaf;
             caption.textContent = name;
+            activeBarcodeLink = link;
+            if (jabOptions) jabOptions.hidden = link.dataset.transportId !== 'jab';
             /* the whole stream is archived and encoded before the first
                frame arrives; announce that centered over the frame area
                only when it is slow enough to notice, and drop it as soon
@@ -382,10 +400,15 @@
             qrPollTimer = setInterval(() => {
                 if (qrFrameShown()) stopQrPreparing();
             }, 120);
-            stream.src = link.getAttribute('href');
+            stream.src = barcodeURL(link);
             qrDialog.showModal();
         });
     }
+    if (jabColors) jabColors.addEventListener('change', () => {
+        if (!activeBarcodeLink || activeBarcodeLink.dataset.transportId !== 'jab' || !qrDialog.open) return;
+        stopQrPreparing();
+        stream.src = barcodeURL(activeBarcodeLink);
+    });
     /* a load event (one per replaced frame) is the fast path; the poll
        above is the fallback for browsers that render the multipart
        stream without firing load */
@@ -401,6 +424,8 @@
     /* swap in a blank image on close so the browser aborts the stream */
     qrDialog.addEventListener('close', () => {
         stopQrPreparing();
+        activeBarcodeLink = null;
+        if (jabOptions) jabOptions.hidden = true;
         stream.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
     });
 

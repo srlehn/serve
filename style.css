@@ -223,8 +223,8 @@ dialog::backdrop {
    even arrived, and so a loading frame does not resize the dialog */
 .qr-stage {
     position: relative;
-    width: min(94vmin, calc(100vw - 32px), calc(100vh - 76px));
-    width: min(94vmin, calc(100vw - 32px), calc(100dvh - 76px));
+    width: min(94vmin, calc(100vw - 32px), calc(100vh - 92px));
+    width: min(94vmin, calc(100vw - 32px), calc(100dvh - 92px));
     aspect-ratio: 1 / 1;
     margin: 0 auto;
 }
@@ -237,10 +237,42 @@ dialog::backdrop {
     image-rendering: pixelated;
 }
 
-.qr-dialog p {
-    margin: 6px 0 0;
+.qr-caption-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    max-width: min(94vmin, calc(100vw - 32px));
+    margin-top: 6px;
+}
+
+.qr-dialog .qr-caption {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
     text-align: center;
     font-family: monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.qr-options {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: .9em;
+    white-space: nowrap;
+}
+
+.qr-options[hidden] {
+    display: none;
 }
 
 /* preparing/error notice, overlaid at the center of the frame area and

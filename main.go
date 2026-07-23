@@ -128,7 +128,6 @@ var styleCSS []byte
 
 // the camera scanners: the qrstream and jabstream decoders compiled
 // to wasm plus the shared JS loader. Rebuild with go generate.
-//
 var (
 	//go:embed wasm/qrstream.wasm
 	qrWASM []byte
@@ -1058,6 +1057,7 @@ func transferActions(backends []transferBackend, name, path string, directory bo
 type pageData struct {
 	Files          []pageEntry
 	Backends       []transferBackend
+	JABColors      []int
 	ArchiveURL     string
 	DirActions     []pageAction
 	UploadURL      string
@@ -1127,6 +1127,7 @@ func (s *server) renderDirectory(w io.Writer, req *http.Request, directory fileb
 	data := pageData{
 		Files:          entries,
 		Backends:       backends,
+		JABColors:      jabstream.SupportedColors(),
 		ArchiveURL:     archiveURL(directory.Name),
 		DirActions:     transferActions(backends, currentName, directory.Name, true),
 		UploadURL:      uploadURL,
