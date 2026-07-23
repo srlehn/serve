@@ -93,4 +93,4 @@ test-high-color:
 	$(GO) test -tags=jabcode_non_iso_encode,jabcode_high_color ./...
 
 clean:
-	rm -f -- serve $(WASM) $(WASM_EXEC)
+	rm -f -- serve serve.upx serve.[0-9][0-9][0-9] $(WASM) $(WASM_EXEC)
