@@ -6,7 +6,7 @@ require (
 	github.com/klauspost/compress v1.19.1
 	github.com/makiuchi-d/gozxing v0.1.1
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
-	github.com/srlehn/jabcode v0.0.0-20260723021726-79320b65f8a7
+	github.com/srlehn/jabcode v0.0.0-20260723044759-87ddfad23ba8
 	golang.org/x/sys v0.47.0
 	golang.org/x/text v0.40.0
 )
